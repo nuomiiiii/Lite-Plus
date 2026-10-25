@@ -217,7 +217,7 @@ func assembleWithAddrs(user models.NodeUser, inbounds []models.Inbound, creds []
 			}
 		}
 		nodes = append(nodes, Node{
-			Name:        shareName(user, in),
+			Name:        shareName(in),
 			Protocol:    in.Protocol,
 			Host:        host,
 			Port:        port,
@@ -274,19 +274,12 @@ func shareTransportFields(transport string, cfg inboundcfg.Settings) (path, host
 	}
 }
 
-func shareName(user models.NodeUser, in models.Inbound) string {
+func shareName(in models.Inbound) string {
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		name = strings.TrimSpace(in.ID)
 	}
-	if strings.EqualFold(strings.TrimSpace(in.Protocol), "vless") {
-		return name
-	}
-	userName := strings.TrimSpace(user.Username)
-	if userName == "" {
-		return name
-	}
-	return userName + "-" + name
+	return name
 }
 
 func shareAddress(in models.Inbound, cfg inboundcfg.Settings, addrs nodeAddr, certs certDomainIndex) (string, int, bool) {

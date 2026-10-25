@@ -75,6 +75,34 @@ func TestAssembleGrantsSortAndReality(t *testing.T) {
 	}
 }
 
+func TestAssembleUsesInboundName(t *testing.T) {
+	for _, tc := range []struct {
+		core      string
+		protocols []string
+	}{
+		{models.CoreXray, []string{"vless", "vmess", "trojan", "shadowsocks"}},
+		{models.CoreSingBox, []string{"vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic", "anytls"}},
+	} {
+		for _, protocol := range tc.protocols {
+			t.Run(tc.core+"/"+protocol, func(t *testing.T) {
+				inbounds := []models.Inbound{
+					{ID: "n1", Name: " edge ", Core: tc.core, Protocol: protocol, Listen: "203.0.113.9", Port: 443, Enabled: true, SortIndex: 1,
+						SettingsJSON: `{"share_strategy":"listen"}`},
+					{ID: " n2 ", Name: " ", Core: tc.core, Protocol: protocol, Listen: "203.0.113.9", Port: 8443, Enabled: true, SortIndex: 2,
+						SettingsJSON: `{"share_strategy":"listen"}`},
+				}
+				nodes := UserNodes(models.NodeUser{Username: "alice"}, inbounds, []models.Credential{{UUID: "u", Enabled: true}})
+				if len(nodes) != 2 {
+					t.Fatalf("want 2 nodes, got %+v", nodes)
+				}
+				if nodes[0].Name != "edge" || nodes[1].Name != "n2" {
+					t.Fatalf("inbound names: %+v", nodes)
+				}
+			})
+		}
+	}
+}
+
 func TestAssembleUsesNodeAddressWhenListenIsWildcard(t *testing.T) {
 	in := models.Inbound{
 		ID: "n", NodeUUID: "node-1", Name: "edge", Protocol: "vless",
