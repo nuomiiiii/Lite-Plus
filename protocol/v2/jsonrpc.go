@@ -33,6 +33,7 @@ const (
 	MethodAgentFirewallSnapshot = "agent.firewall.snapshot"
 	MethodAgentFirewallApply    = "agent.firewall.apply"
 	MethodAgentFirewallAdopt    = "agent.firewall.adopt"
+	MethodAgentFirewallInstall  = "agent.firewall.install"
 	MethodAgentFirewallResult   = "agent.firewall.result"
 
 	CapabilityMCPFull    = "mcp_full"

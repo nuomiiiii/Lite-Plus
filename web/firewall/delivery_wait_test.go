@@ -15,7 +15,7 @@ func TestDispatchRegistersWaiterBeforeSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(src)
-	for _, name := range []string{"func DispatchSnapshot", "func dispatchApply", "func DispatchAdopt"} {
+	for _, name := range []string{"func DispatchSnapshot", "func dispatchApply", "func DispatchAdopt", "func DispatchInstall"} {
 		fn := extractFunc(text, name)
 		start := strings.Index(fn, "startWait(")
 		dispatch := strings.Index(fn, "DispatchV2Event(")
@@ -26,6 +26,10 @@ func TestDispatchRegistersWaiterBeforeSend(t *testing.T) {
 	}
 	if !strings.Contains(text, "applyWait") || !strings.Contains(text, "60 * time.Second") {
 		t.Fatal("apply wait must cover nft/iptables plus watchdog")
+	}
+	install := extractFunc(text, "func DispatchInstall")
+	if !strings.Contains(install, "installWait") || !strings.Contains(text, "4 * time.Minute") {
+		t.Fatal("install wait must cover package manager nftables installs")
 	}
 	apply := extractFunc(text, "func dispatchApply")
 	if strings.Contains(apply, "防火墙应用超时") {

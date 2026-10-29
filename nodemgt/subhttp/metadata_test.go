@@ -1,8 +1,10 @@
 package subhttp
 
 import (
+	"encoding/base64"
 	"mime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,12 @@ import (
 	"github.com/nuomiiiii/lite/nodemgt/store"
 	"github.com/stretchr/testify/require"
 )
+
+func enableSubscriptionMetadata(t *testing.T, st *store.Store, name, userinfo bool) {
+	t.Helper()
+	require.NoError(t, st.SetSetting(SettingPublishName, strconv.FormatBool(name)))
+	require.NoError(t, st.SetSetting(SettingPublishUserinfo, strconv.FormatBool(userinfo)))
+}
 
 func metadataFilename(t *testing.T, disposition string) string {
 	t.Helper()
@@ -25,6 +33,14 @@ func metadataFilename(t *testing.T, disposition string) string {
 	return params["filename"]
 }
 
+func metadataProfileTitle(t *testing.T, header, want string) {
+	t.Helper()
+	require.True(t, strings.HasPrefix(header, "base64:"), header)
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(header, "base64:"))
+	require.NoError(t, err)
+	require.Equal(t, want, string(raw))
+}
+
 func metadataPlan(t *testing.T, st *store.Store, userID, name string, start time.Time, end *time.Time, created time.Time, shared bool) models.Plan {
 	t.Helper()
 	plan := models.Plan{Name: name, TrafficBytes: 200 << 30, SharedPool: shared}
@@ -36,10 +52,50 @@ func metadataPlan(t *testing.T, st *store.Store, userID, name string, start time
 	return plan
 }
 
+func TestPublicSubscriptionOmitsMetadataUntilEnabled(t *testing.T) {
+	st, row := subscriptionFixture(t)
+	user, err := st.GetUser(row.UserID)
+	require.NoError(t, err)
+	expires := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	user.QuotaBytes, user.UsedBytes, user.ExpiresAt = 100, 20, &expires
+	require.NoError(t, st.UpsertUser(user))
+	metadataPlan(t, st, user.ID, "Pro", time.Now().Add(-time.Hour), nil, time.Now(), false)
+
+	off := publicSubscription(st, row.Token, "?target=mihomo", "")
+	require.Equal(t, 200, off.Code, off.Body.String())
+	require.Empty(t, off.Header().Get("Content-Disposition"))
+	require.Empty(t, off.Header().Get("Profile-Title"))
+	require.Empty(t, off.Header().Get("Subscription-Userinfo"))
+	body := off.Body.String()
+
+	enableSubscriptionMetadata(t, st, true, false)
+	nameOnly := publicSubscription(st, row.Token, "?target=mihomo", "")
+	require.Equal(t, 200, nameOnly.Code)
+	require.Equal(t, "alice · Pro", metadataFilename(t, nameOnly.Header().Get("Content-Disposition")))
+	metadataProfileTitle(t, nameOnly.Header().Get("Profile-Title"), "alice · Pro")
+	require.Empty(t, nameOnly.Header().Get("Subscription-Userinfo"))
+	require.Equal(t, body, nameOnly.Body.String())
+
+	enableSubscriptionMetadata(t, st, false, true)
+	infoOnly := publicSubscription(st, row.Token, "?target=mihomo", "")
+	require.Equal(t, 200, infoOnly.Code)
+	require.Empty(t, infoOnly.Header().Get("Content-Disposition"))
+	require.Empty(t, infoOnly.Header().Get("Profile-Title"))
+	require.Equal(t, "upload=0; download=20; total=100; expire="+strconv.FormatInt(expires.Unix(), 10), infoOnly.Header().Get("Subscription-Userinfo"))
+	require.Equal(t, body, infoOnly.Body.String())
+
+	enableSubscriptionMetadata(t, st, true, true)
+	both := publicSubscription(st, row.Token, "?target=mihomo", "")
+	require.Equal(t, "alice · Pro", metadataFilename(t, both.Header().Get("Content-Disposition")))
+	require.NotEmpty(t, both.Header().Get("Subscription-Userinfo"))
+	require.Equal(t, body, both.Body.String())
+}
+
 func TestPublicSubscriptionMetadataAcrossFormats(t *testing.T) {
 	st, row := subscriptionFixture(t)
 	row.AutoDetect = true
 	require.NoError(t, st.UpsertSubscription(&row))
+	enableSubscriptionMetadata(t, st, true, true)
 	user, err := st.GetUser(row.UserID)
 	require.NoError(t, err)
 	now := time.Now().UTC()
@@ -67,6 +123,7 @@ func TestPublicSubscriptionMetadataAcrossFormats(t *testing.T) {
 			w := publicSubscription(st, row.Token, tc.query, tc.ua)
 			require.Equal(t, 200, w.Code, w.Body.String())
 			require.Equal(t, "MIKU · 月付 100GB", metadataFilename(t, w.Header().Get("Content-Disposition")))
+			metadataProfileTitle(t, w.Header().Get("Profile-Title"), "MIKU · 月付 100GB")
 			require.Equal(t, "upload=0; download=1073741824; total=107374182400; expire="+strconv.FormatInt(expires.Unix(), 10), w.Header().Get("Subscription-Userinfo"))
 		})
 	}
@@ -116,6 +173,7 @@ func TestSubscriptionNameUsesNewestActiveExistingPlan(t *testing.T) {
 			metadata, err := loadSubscriptionMetadata(st, row.UserID, at)
 			require.NoError(t, err)
 			require.Equal(t, tc.want, metadataFilename(t, metadata.contentDisposition))
+			metadataProfileTitle(t, metadata.profileTitle, tc.want)
 		})
 	}
 }
@@ -138,6 +196,7 @@ func TestPublicSubscriptionMetadataSpecialQuotas(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st, row := subscriptionFixture(t)
+			enableSubscriptionMetadata(t, st, true, true)
 			user, err := st.GetUser(row.UserID)
 			require.NoError(t, err)
 			expires := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
@@ -164,6 +223,7 @@ func TestPublicSubscriptionMetadataSpecialQuotas(t *testing.T) {
 
 func TestSubscriptionMetadataRefreshesWithoutChangingBody(t *testing.T) {
 	st, row := subscriptionFixture(t)
+	enableSubscriptionMetadata(t, st, true, true)
 	before := publicSubscription(st, row.Token, "?target=mihomo", "")
 	require.Equal(t, 200, before.Code)
 	require.Equal(t, "alice", metadataFilename(t, before.Header().Get("Content-Disposition")))
@@ -195,6 +255,7 @@ func TestSubscriptionMetadataRefreshesWithoutChangingBody(t *testing.T) {
 
 func TestSubscriptionFilenameSanitizesUntrustedNames(t *testing.T) {
 	st, row := subscriptionFixture(t)
+	enableSubscriptionMetadata(t, st, true, false)
 	user, err := st.GetUser(row.UserID)
 	require.NoError(t, err)
 	user.Username = "米\r\n库/\\\""
@@ -202,14 +263,15 @@ func TestSubscriptionFilenameSanitizesUntrustedNames(t *testing.T) {
 	metadataPlan(t, st, user.ID, "套餐\r\nX-Injected: yes/\\", time.Now().Add(-time.Hour), nil, time.Now(), false)
 	w := publicSubscription(st, row.Token, "?target=mihomo", "")
 	require.Equal(t, 200, w.Code)
-	require.Equal(t, "米  库__\" · 套餐  X-Injected: yes__", metadataFilename(t, w.Header().Get("Content-Disposition")))
+	require.Equal(t, "米  库___ · 套餐  X-Injected: yes__", metadataFilename(t, w.Header().Get("Content-Disposition")))
 	require.Empty(t, w.Header().Get("X-Injected"))
 }
 
 func TestRejectedSubscriptionsOmitMetadata(t *testing.T) {
-	for _, kind := range []string{"invalid-token", "disabled-subscription", "disabled-user", "expired-user", "metadata-error"} {
+	for _, kind := range []string{"invalid-token", "disabled-subscription", "disabled-user", "expired-user"} {
 		t.Run(kind, func(t *testing.T) {
 			st, row := subscriptionFixture(t)
+			enableSubscriptionMetadata(t, st, true, true)
 			token := row.Token
 			switch kind {
 			case "invalid-token":
@@ -221,14 +283,25 @@ func TestRejectedSubscriptionsOmitMetadata(t *testing.T) {
 				require.NoError(t, st.SetUserStatus(row.UserID, models.UserDisabled))
 			case "expired-user":
 				require.NoError(t, st.DB().Model(&models.NodeUser{}).Where("id = ?", row.UserID).Update("expires_at", time.Now().Add(-time.Minute)).Error)
-			case "metadata-error":
-				require.NoError(t, st.DB().Migrator().DropTable(&models.Assignment{}))
 			}
 			w := publicSubscription(st, token, "?target=v2ray", "")
 			require.Equal(t, 404, w.Code)
 			require.Empty(t, w.Header().Get("Content-Disposition"))
+			require.Empty(t, w.Header().Get("Profile-Title"))
 			require.Empty(t, w.Header().Get("Subscription-Userinfo"))
 			require.NotContains(t, w.Body.String(), "alice")
 		})
 	}
+}
+
+func TestMetadataLoadErrorStillDeliversSubscription(t *testing.T) {
+	st, row := subscriptionFixture(t)
+	enableSubscriptionMetadata(t, st, true, true)
+	require.NoError(t, st.DB().Migrator().DropTable(&models.Assignment{}))
+	w := publicSubscription(st, row.Token, "?target=v2ray", "")
+	require.Equal(t, 200, w.Code, w.Body.String())
+	require.NotEmpty(t, w.Body.String())
+	require.Empty(t, w.Header().Get("Content-Disposition"))
+	require.Empty(t, w.Header().Get("Profile-Title"))
+	require.Empty(t, w.Header().Get("Subscription-Userinfo"))
 }

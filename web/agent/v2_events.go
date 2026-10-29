@@ -219,7 +219,7 @@ func v2EventCoalesceKey(event v2.Event) string {
 	if event.Method == v2.MethodAgentConfig {
 		return v2.MethodAgentConfig
 	}
-	if event.Method == v2.MethodAgentFirewallApply || event.Method == v2.MethodAgentFirewallSnapshot || event.Method == v2.MethodAgentFirewallAdopt {
+	if event.Method == v2.MethodAgentFirewallApply || event.Method == v2.MethodAgentFirewallSnapshot || event.Method == v2.MethodAgentFirewallAdopt || event.Method == v2.MethodAgentFirewallInstall {
 		return event.Method
 	}
 	if event.Method != v2.MethodAgentPing && event.Method != v2.MethodAgentRoute {

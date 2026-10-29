@@ -9,12 +9,22 @@ Lite 是一款轻量、自托管的服务器监控与运维管理工具。服务
 
 本项目基于 [komari-monitor/komari](https://github.com/komari-monitor/komari) 持续开发，重点改善低配置主控上的数据库占用、历史查询和维护负载，同时提供流量管理、成本中心、备份迁移、接入安全与适配电脑和手机的管理界面。
 
-**当前正式版：Lite-Plus [`0.1.1`](https://github.com/nuomiiiii/Lite-Plus/releases/tag/0.1.1) · 配套 Agent [`0.0.2.2`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.0.2.2) · 默认主题 [`1.2.9`](https://github.com/nuomiiiii/Lite-theme/releases/tag/v1.2.9)**
+**当前正式版：Lite-Plus [`0.1.2`](https://github.com/nuomiiiii/Lite-Plus/releases/tag/0.1.2) · 配套 Agent [`0.0.2.3`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.0.2.3) · 默认主题 [`1.2.9`](https://github.com/nuomiiiii/Lite-theme/releases/tag/v1.2.9)**
 
 [使用手册](https://nuomiiiii.github.io/Lite-document/) · [快速开始](#快速开始) · [功能概览](#功能概览) · [升级说明](#从旧版本升级) · [Agent](#agent-与远程管理) · [MCP 代理](#mcp-代理与-ai-授权) · [完整更新日志](https://github.com/nuomiiiii/Lite-Plus/releases)
 
 > [!WARNING]
 > Lite 只能部署在你拥有或已获得授权管理的设备上。请勿将其用于未经授权的访问、持久化、命令执行或其他滥用行为。管理员应启用 HTTPS 与双因素认证，并妥善保护 Agent Token 和备份文件。
+
+## 0.1.2
+
+- 入口管理可分别开关「下发订阅名称」和「下发流量和到期信息」，默认关闭。开启后，客户端导入时可显示「用户名 · 套餐名」，以及已用流量、额度和到期时间，无限额显示为 0。来自 @Sowhat1217 #4。
+- 反向代理的内置 HTTPS 增加「复用根域名证书」。签发管理里只有一张已签发的根域名证书时直接套用；有多张时弹出选择。
+- 主机没有可用防火墙时，远程管理可安装 nftables，装完由 Plus 接管入站。不会启用系统自带的 nftables 服务。需搭配 Lite-Plus-agent `0.0.2.3`。
+- 主机已有 nftables / iptables / UFW / firewalld 且带默认拒绝时，后台放行的端口会写进那条入站链，不再出现链里已放行、外面仍不通。需搭配 Lite-Plus-agent `0.0.2.3`。
+- 防火墙规则按优先级排序；同步主机规则不再把 Plus 自己的链扫进来报超时。
+- 入站删除后，对应的防火墙放行会一并清掉，不再留在主机上。
+- 从入站复制 Shadowsocks 出站时，会带上 TCP / UDP 网络选择。需搭配 Lite-Plus-agent `0.0.2.3`。
 
 ## 0.1.1
 

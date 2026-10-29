@@ -20,6 +20,7 @@ var errQueueFull = errors.New("远程事件队列已满，请稍后重试")
 const (
 	snapshotWait   = 20 * time.Second
 	applyWait      = 60 * time.Second
+	installWait    = 4 * time.Minute
 	applyRetrySkew = 15 * time.Second
 )
 
@@ -69,6 +70,11 @@ func waitFor(requestID string, timeout time.Duration) (v2.FirewallResultParams, 
 	}
 }
 
+func SaveCleanSnapshot(clientUUID string, snapshot v2.FirewallResultParams) error {
+	snapshot.HostRules = DropOwnedHostNoise(snapshot.HostRules)
+	return fwstore.SaveSnapshot(clientUUID, snapshot)
+}
+
 func CompleteResult(uuid string, result v2.FirewallResultParams) {
 	if result.Kind == v2.FirewallKindApply {
 		status := fwstore.DeliveryFailed
@@ -89,7 +95,7 @@ func CompleteResult(uuid string, result v2.FirewallResultParams) {
 			_ = fwstore.DisableDefaultDeny(uuid)
 		}
 	}
-	_ = fwstore.SaveSnapshot(uuid, result)
+	_ = SaveCleanSnapshot(uuid, result)
 	waitMu.Lock()
 	waiter := waiters[result.RequestID]
 	waitMu.Unlock()
@@ -194,6 +200,27 @@ func DispatchAdopt(uuid string, keys []string) (v2.FirewallResultParams, bool) {
 	return result, got
 }
 
+func DispatchInstall(uuid string) (v2.FirewallResultParams, bool, error) {
+	requestID := newRequestID()
+	startWait(requestID)
+	defer stopWait(requestID)
+	params := v2.FirewallInstallParams{RequestID: requestID}
+	ok := false
+	agent_runtime.GuardRemoteDelivery(func() bool {
+		return remote.RemoteManagementEnabled()
+	}, func() {
+		ok = agent_runtime.DispatchV2Event(uuid, v2.MethodAgentFirewallInstall, params)
+	})
+	if !ok {
+		return v2.FirewallResultParams{}, false, errQueueFull
+	}
+	if agent_runtime.GetConnectedClient(uuid) == nil && !agent_runtime.IsAgentOnline(uuid) {
+		return v2.FirewallResultParams{}, false, nil
+	}
+	result, got := waitFor(requestID, installWait)
+	return result, got, nil
+}
+
 func PushPending(uuid string) {
 	if uuid == "" {
 		rows, err := fwstore.DueApplies()
@@ -264,7 +291,7 @@ func GuardDefaultDeny(uuid string, prev, intent v2.FirewallIntent) error {
 		}
 		if got {
 			snap = &result
-			_ = fwstore.SaveSnapshot(uuid, result)
+			_ = SaveCleanSnapshot(uuid, result)
 		}
 	}
 	if snap != nil {

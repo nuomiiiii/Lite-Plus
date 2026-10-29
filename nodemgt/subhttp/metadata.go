@@ -1,6 +1,7 @@
 package subhttp
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"mime"
@@ -12,9 +13,24 @@ import (
 	"github.com/nuomiiiii/lite/nodemgt/store"
 )
 
+const (
+	SettingPublishName     = "sub_publish_name"
+	SettingPublishUserinfo = "sub_publish_userinfo"
+)
+
 type subscriptionMetadata struct {
 	contentDisposition string
+	profileTitle       string
 	userInfo           string
+}
+
+func MetadataPublishFlags(st *store.Store) (publishName, publishUserinfo bool) {
+	if st == nil {
+		return false, false
+	}
+	nameRaw, _ := st.GetSetting(SettingPublishName)
+	infoRaw, _ := st.GetSetting(SettingPublishUserinfo)
+	return settingOn(nameRaw), settingOn(infoRaw)
 }
 
 func loadSubscriptionMetadata(st *store.Store, userID string, at time.Time) (subscriptionMetadata, error) {
@@ -24,10 +40,10 @@ func loadSubscriptionMetadata(st *store.Store, userID string, at time.Time) (sub
 		return empty, err
 	}
 	if user.Status != models.UserActive {
-		return empty, store.ErrUserDisabled
+		return empty, nil
 	}
 	if user.ExpiresAt != nil && !user.ExpiresAt.After(at) {
-		return empty, store.ErrUserExpired
+		return empty, nil
 	}
 	plan, err := activeSubscriptionPlan(st, userID, at)
 	if err != nil {
@@ -39,9 +55,11 @@ func loadSubscriptionMetadata(st *store.Store, userID string, at time.Time) (sub
 			name += " · " + planName
 		}
 	}
-	metadata := subscriptionMetadata{
+	metadata := subscriptionMetadata{}
+	if name != "" {
 		// FormatMediaType uses RFC 2231 filename* encoding for Unicode names.
-		contentDisposition: mime.FormatMediaType("attachment", map[string]string{"filename": name}),
+		metadata.contentDisposition = mime.FormatMediaType("attachment", map[string]string{"filename": name})
+		metadata.profileTitle = "base64:" + base64.StdEncoding.EncodeToString([]byte(name))
 	}
 	// Shared-pool accounting is not implemented yet. Per-user counters cannot
 	// describe a pool, so omit quota metadata instead of advertising false totals.
@@ -84,7 +102,7 @@ func subscriptionNamePart(value string) string {
 		switch {
 		case unicode.IsControl(r):
 			return ' '
-		case r == '/' || r == '\\':
+		case r == '/' || r == '\\' || r == '"' || r == '<' || r == '>' || r == '|' || r == '*' || r == '?':
 			return '_'
 		default:
 			return r

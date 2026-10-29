@@ -293,14 +293,21 @@ func Write(c *gin.Context, st *store.Store, token string) {
 		c.String(http.StatusNotFound, "Subscription unavailable")
 		return
 	}
-	metadata, err := loadSubscriptionMetadata(st, row.UserID, time.Now().UTC())
-	if err != nil {
-		c.String(http.StatusNotFound, "Subscription unavailable")
-		return
-	}
-	c.Header("Content-Disposition", metadata.contentDisposition)
-	if metadata.userInfo != "" {
-		c.Header("Subscription-Userinfo", metadata.userInfo)
+	publishName, publishUserinfo := MetadataPublishFlags(st)
+	if publishName || publishUserinfo {
+		if metadata, err := loadSubscriptionMetadata(st, row.UserID, time.Now().UTC()); err == nil {
+			if publishName {
+				if metadata.contentDisposition != "" {
+					c.Header("Content-Disposition", metadata.contentDisposition)
+				}
+				if metadata.profileTitle != "" {
+					c.Header("Profile-Title", metadata.profileTitle)
+				}
+			}
+			if publishUserinfo && metadata.userInfo != "" {
+				c.Header("Subscription-Userinfo", metadata.userInfo)
+			}
+		}
 	}
 	c.Header("X-Subscription-Client", doc.Client)
 	c.Data(http.StatusOK, doc.ContentType, []byte(doc.Body))

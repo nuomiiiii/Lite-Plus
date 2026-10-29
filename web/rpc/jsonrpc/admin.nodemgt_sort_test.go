@@ -35,6 +35,30 @@ func TestResolveInboundSortIndexKeepsZero(t *testing.T) {
 	}
 }
 
+func TestOutboundViewUsesSSNetwork(t *testing.T) {
+	udp := outboundView(models.Outbound{
+		Protocol:     "shadowsocks",
+		SettingsJSON: `{"transport":"tcp","ss_network":"udp","ss_method":"aes-128-gcm"}`,
+	})
+	if udp["transport"] != "udp" {
+		t.Fatalf("ss_network udp, got %v", udp["transport"])
+	}
+	legacy := outboundView(models.Outbound{
+		Protocol:     "shadowsocks",
+		SettingsJSON: `{"transport":"tcp","ss_method":"aes-128-gcm"}`,
+	})
+	if legacy["transport"] != "tcp,udp" {
+		t.Fatalf("legacy tcp dummy should display both, got %v", legacy["transport"])
+	}
+	tcp := outboundView(models.Outbound{
+		Protocol:     "shadowsocks",
+		SettingsJSON: `{"transport":"tcp","ss_network":"tcp"}`,
+	})
+	if tcp["transport"] != "tcp" {
+		t.Fatalf("ss_network tcp, got %v", tcp["transport"])
+	}
+}
+
 func TestInboundCreateEmptySortUsesGlobalLast(t *testing.T) {
 	src, err := os.ReadFile("admin.nodemgt.go")
 	if err != nil {

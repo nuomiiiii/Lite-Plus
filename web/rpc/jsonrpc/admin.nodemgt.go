@@ -726,6 +726,7 @@ func outboundView(row models.Outbound) map[string]any {
 		WSHost           string `json:"ws_host"`
 		GRPCService      string `json:"grpc_service"`
 		SSMethod         string `json:"ss_method"`
+		SSNetwork        string `json:"ss_network"`
 		ViaOutbound      string `json:"via_outbound"`
 		RealityPublicKey string `json:"reality_public_key"`
 		RealityShortID   string `json:"reality_short_id"`
@@ -733,6 +734,10 @@ func outboundView(row models.Outbound) map[string]any {
 		SourceInboundID  string `json:"source_inbound_id"`
 	}
 	_ = json.Unmarshal([]byte(row.SettingsJSON), &s)
+	transport := s.Transport
+	if strings.EqualFold(row.Protocol, "shadowsocks") {
+		transport = inboundcfg.EffectiveSSNetwork(inboundcfg.Settings{Transport: s.Transport, SSNetwork: s.SSNetwork})
+	}
 	return map[string]any{
 		"id":                 row.ID,
 		"node_uuid":          row.NodeUUID,
@@ -750,7 +755,7 @@ func outboundView(row models.Outbound) map[string]any {
 		"uuid":               s.UUID,
 		"flow":               s.Flow,
 		"domain_strategy":    s.DomainStrategy,
-		"transport":          s.Transport,
+		"transport":          transport,
 		"security":           s.Security,
 		"sni":                s.SNI,
 		"fingerprint":        s.Fingerprint,
@@ -834,6 +839,8 @@ func nodemgtOutboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 			method = inboundcfg.DefaultSSMethod()
 		}
 		cfgMap["ss_method"] = method
+		cfgMap["ss_network"] = inboundcfg.NormalizeSSNetwork(p.Transport)
+		cfgMap["transport"] = "tcp"
 	}
 	cfg, _ := json.Marshal(cfgMap)
 	p.SettingsJSON = string(cfg)
@@ -1911,6 +1918,7 @@ func nodemgtSettingsGet(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.Jso
 		return nil, nodemgtErr(err)
 	}
 	httpsCert, httpsKey, httpsDomains := subhttp.PanelCertificate()
+	publishName, publishUserinfo := subhttp.MetadataPublishFlags(st)
 	return map[string]any{
 		"cf_api_token_set":       strings.TrimSpace(token) != "",
 		"acme_email":             email,
@@ -1920,6 +1928,8 @@ func nodemgtSettingsGet(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.Jso
 		"sub_public_host":        cfg.PublicHost,
 		"sub_domain":             cfg.Domain,
 		"sub_reuse_https":        cfg.ReuseHTTPS,
+		"sub_publish_name":       publishName,
+		"sub_publish_userinfo":   publishUserinfo,
 		"https_certificate_path": httpsCert,
 		"https_private_key_path": httpsKey,
 		"https_domains":          httpsDomains,
@@ -1928,14 +1938,16 @@ func nodemgtSettingsGet(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.Jso
 
 func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	var p struct {
-		CFAPIToken    string  `json:"cf_api_token"`
-		ClearIssuer   *bool   `json:"clear_issuer"`
-		ACMEEmail     *string `json:"acme_email"`
-		SubListenPort *int    `json:"sub_listen_port"`
-		SubPublicPort *int    `json:"sub_public_port"`
-		SubPath       *string `json:"sub_path"`
-		SubPublicHost *string `json:"sub_public_host"`
-		SubReuseHTTPS *bool   `json:"sub_reuse_https"`
+		CFAPIToken         string  `json:"cf_api_token"`
+		ClearIssuer        *bool   `json:"clear_issuer"`
+		ACMEEmail          *string `json:"acme_email"`
+		SubListenPort      *int    `json:"sub_listen_port"`
+		SubPublicPort      *int    `json:"sub_public_port"`
+		SubPath            *string `json:"sub_path"`
+		SubPublicHost      *string `json:"sub_public_host"`
+		SubReuseHTTPS      *bool   `json:"sub_reuse_https"`
+		SubPublishName     *bool   `json:"sub_publish_name"`
+		SubPublishUserinfo *bool   `json:"sub_publish_userinfo"`
 	}
 	if err := req.BindParams(&p); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
@@ -2009,6 +2021,16 @@ func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 			if err := st.SetSetting(key, ""); err != nil {
 				return nil, nodemgtErr(err)
 			}
+		}
+	}
+	if p.SubPublishName != nil {
+		if err := st.SetSetting(subhttp.SettingPublishName, strconv.FormatBool(*p.SubPublishName)); err != nil {
+			return nil, nodemgtErr(err)
+		}
+	}
+	if p.SubPublishUserinfo != nil {
+		if err := st.SetSetting(subhttp.SettingPublishUserinfo, strconv.FormatBool(*p.SubPublishUserinfo)); err != nil {
+			return nil, nodemgtErr(err)
 		}
 	}
 	if p.SubPublicHost != nil || p.SubReuseHTTPS != nil || restartSub {

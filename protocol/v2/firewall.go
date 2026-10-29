@@ -30,6 +30,7 @@ const (
 	FirewallKindSnapshot       = "snapshot"
 	FirewallKindApply          = "apply"
 	FirewallKindAdopt          = "adopt"
+	FirewallKindInstall        = "install"
 )
 
 type FirewallRule struct {
@@ -93,6 +94,10 @@ type FirewallAdoptParams struct {
 	Keys      []string `json:"keys"`
 }
 
+type FirewallInstallParams struct {
+	RequestID string `json:"request_id"`
+}
+
 type FirewallResultParams struct {
 	RequestID              string             `json:"request_id"`
 	Kind                   string             `json:"kind"`
@@ -102,6 +107,7 @@ type FirewallResultParams struct {
 	Backend                string             `json:"backend,omitempty"`
 	Privileged             bool               `json:"privileged"`
 	Supported              bool               `json:"supported"`
+	CanInstallNftables     bool               `json:"can_install_nftables,omitempty"`
 	OuterFilter            bool               `json:"outer_filter"`
 	OuterHint              string             `json:"outer_hint,omitempty"`
 	OuterManagers          []string           `json:"outer_managers,omitempty"`

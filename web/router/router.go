@@ -126,6 +126,7 @@ func registerAdminRoutes(r *gin.Engine) {
 	g.GET("/settings/https", admin.GetHTTPSSettings)
 	g.POST("/settings/https", admin.UpdateHTTPSSettings)
 	g.POST("/settings/https/reload", admin.ReloadHTTPSCertificate)
+	g.POST("/settings/https/reuse-root", admin.ReuseRootCertificate)
 
 	// theme 含文件操作，保留 REST handler。API Key 不能改主题。
 	theme := g.Group("/theme")
@@ -183,6 +184,7 @@ func registerAdminRoutes(r *gin.Engine) {
 	g.PUT("/firewall/:uuid", jsonRpc.Bind("admin:saveFirewall", jsonRpc.WithPath("uuid")))
 	g.POST("/firewall/:uuid/snapshot", jsonRpc.Bind("admin:snapshotFirewall", jsonRpc.WithPath("uuid")))
 	g.POST("/firewall/:uuid/adopt", jsonRpc.Bind("admin:adoptFirewall", jsonRpc.WithPath("uuid")))
+	g.POST("/firewall/:uuid/install", jsonRpc.Bind("admin:installFirewall", jsonRpc.WithPath("uuid")))
 	g.GET("/scheduled-exec", jsonRpc.Bind("admin:listScheduledExec"))
 	g.POST("/scheduled-exec", jsonRpc.Bind("admin:createScheduledExec"))
 	g.POST("/scheduled-exec/order", jsonRpc.Bind("admin:reorderScheduledExec"))

@@ -21,6 +21,7 @@ func init() {
 	reg("saveFirewall", adminSaveFirewall, "Save and apply per-node firewall intent")
 	reg("snapshotFirewall", adminSnapshotFirewall, "Scan host firewall rules")
 	reg("adoptFirewall", adminAdoptFirewall, "Adopt host firewall rules into Plus")
+	reg("installFirewall", adminInstallFirewall, "Install nftables on a node with no host firewall")
 }
 
 type firewallSaveBody struct {
@@ -57,6 +58,7 @@ func adminGetFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.J
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
 	}
+	row = reconcileOrphanInbound(client.UUID, row)
 	return firewallView(client, row, fwstore.SnapshotFromRow(row), false), nil
 }
 
@@ -89,7 +91,7 @@ func adminSnapshotFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
 	}
 	if got {
-		_ = fwstore.SaveSnapshot(client.UUID, result)
+		_ = firewall.SaveCleanSnapshot(client.UUID, result)
 		row, _ = fwstore.Get(client.UUID)
 		return firewallView(client, row, &result, true), nil
 	}
@@ -127,6 +129,9 @@ func adminSaveFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
 	}
+	if live, ok := liveInboundIDs(client.UUID); ok {
+		intent.Rules = firewall.DropOrphanInboundRules(intent.Rules, live)
+	}
 	row, err := fwstore.Get(client.UUID)
 	if err != nil {
 		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
@@ -154,7 +159,7 @@ func adminSaveFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 		_ = fwstore.RevertSshPort(client.UUID, prevSSH)
 	}
 	if got {
-		_ = fwstore.SaveSnapshot(client.UUID, result)
+		_ = firewall.SaveCleanSnapshot(client.UUID, result)
 	}
 	saved, _ = fwstore.Get(client.UUID)
 	snap := fwstore.SnapshotFromRow(saved)
@@ -197,6 +202,7 @@ func adminAdoptFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	if snap == nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, "host rules are not loaded", nil)
 	}
+	snap.HostRules = firewall.DropOwnedHostNoise(snap.HostRules)
 	intent := fwstore.IntentFromRow(row)
 	wanted := map[string]struct{}{}
 	for _, key := range params.Keys {
@@ -273,7 +279,7 @@ func adminAdoptFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		}
 	}
 	if got {
-		_ = fwstore.SaveSnapshot(client.UUID, result)
+		_ = firewall.SaveCleanSnapshot(client.UUID, result)
 	}
 	saved, _ = fwstore.Get(client.UUID)
 	outSnap := fwstore.SnapshotFromRow(saved)
@@ -288,6 +294,99 @@ func adminAdoptFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		}
 	}
 	return grantPayload(meta.Principal.UserUUID, meta.SessionToken, params.PageID, expires, grantEpoch, view), nil
+}
+
+func adminInstallFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	meta, rpcErr := scheduledExecActor(ctx)
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+	var params struct {
+		UUID   string `json:"uuid"`
+		Grant  string `json:"grant"`
+		PageID string `json:"page_id"`
+	}
+	if err := req.BindParams(&params); err != nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+	}
+	client, rpcErr := loadFirewallClient(params.UUID)
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+	if err := remote.AgentRemoteAllowed(client); err != nil {
+		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
+	}
+	if err := firewall.EnsureApplyAllowed(client.UUID); err != nil {
+		return nil, rpc.MakeError(rpc.PermissionDenied, err.Error(), nil)
+	}
+	expires, grantEpoch, rpcErr := consumeScheduledExecGrant(meta, params.Grant, params.PageID)
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+	actor, ip := auditActor(ctx)
+	auditlog.Event(ip, actor, "info", "audit.firewall_install", map[string]string{"name": client.Name})
+	result, got, err := firewall.DispatchInstall(client.UUID)
+	if err != nil {
+		return nil, rpc.MakeError(rpc.InternalError, err.Error(), nil)
+	}
+	row, _ := fwstore.Get(client.UUID)
+	snap := fwstore.SnapshotFromRow(row)
+	if got {
+		_ = firewall.SaveCleanSnapshot(client.UUID, result)
+		snap = &result
+	}
+	view := firewallView(client, row, snap, got)
+	if got && result.Status != "" && result.Status != v2.FirewallStatusOK {
+		view["delivery_status"] = "failed"
+		view["delivery_error"] = strings.TrimSpace(result.Error)
+	}
+	if !got {
+		view["delivery_status"] = "queued"
+	}
+	return grantPayload(meta.Principal.UserUUID, meta.SessionToken, params.PageID, expires, grantEpoch, view), nil
+}
+
+func liveInboundIDs(nodeUUID string) (map[string]struct{}, bool) {
+	list, err := nodemgtST().ListInbounds(nodeUUID)
+	if err != nil {
+		return nil, false
+	}
+	out := make(map[string]struct{}, len(list))
+	for _, in := range list {
+		if id := strings.TrimSpace(in.ID); id != "" {
+			out[id] = struct{}{}
+		}
+	}
+	return out, true
+}
+
+func reconcileOrphanInbound(nodeUUID string, row *models.ClientFirewallIntent) *models.ClientFirewallIntent {
+	if row == nil {
+		return row
+	}
+	live, ok := liveInboundIDs(nodeUUID)
+	if !ok {
+		return row
+	}
+	intent := fwstore.IntentFromRow(row)
+	cleaned := firewall.DropOrphanInboundRules(intent.Rules, live)
+	if len(cleaned) == len(intent.Rules) {
+		return row
+	}
+	intent.Rules = cleaned
+	saved, err := fwstore.SaveIntent(nodeUUID, intent)
+	if err != nil {
+		return row
+	}
+	applied := fwstore.IntentFromRow(saved)
+	result, got := firewall.DispatchApply(nodeUUID, applied, firewall.ListenHoles(nodeUUID, applied))
+	if got {
+		_ = firewall.SaveCleanSnapshot(nodeUUID, result)
+		if next, err := fwstore.Get(nodeUUID); err == nil && next != nil {
+			return next
+		}
+	}
+	return saved
 }
 
 func loadFirewallClient(uuid string) (models.Client, *rpc.JsonRpcError) {
@@ -352,6 +451,7 @@ func firewallView(client models.Client, row *models.ClientFirewallIntent, snap *
 		var cloned v2.FirewallResultParams
 		_ = json.Unmarshal(raw, &cloned)
 		cloned.KeepRules = keep
+		cloned.HostRules = firewall.DropOwnedHostNoise(cloned.HostRules)
 		if sshPort != "" {
 			cloned.SshPort = sshPort
 		}

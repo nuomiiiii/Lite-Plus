@@ -250,6 +250,22 @@ func TestUpsertRuleByIdentityReusesSamePort(t *testing.T) {
 	}
 }
 
+func TestNormalizeIntentSortsByPriority(t *testing.T) {
+	got, err := NormalizeIntent(v2.FirewallIntent{
+		Rules: []v2.FirewallRule{
+			{ID: "b", Action: "allow", Protocol: "tcp", Port: "443", Stack: "v4", Priority: 200},
+			{ID: "a", Action: "allow", Protocol: "tcp", Port: "80", Stack: "v4", Priority: 50},
+			{ID: "c", Action: "allow", Protocol: "tcp", Port: "22", Stack: "v4", Priority: 200},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Rules) != 3 || got.Rules[0].Port != "80" || got.Rules[1].ID != "b" || got.Rules[2].ID != "c" {
+		t.Fatalf("rules must sort by priority then id: %+v", got.Rules)
+	}
+}
+
 func TestNormalizeIntentExpandsBothProtocol(t *testing.T) {
 	got, err := NormalizeIntent(v2.FirewallIntent{
 		Rules: []v2.FirewallRule{
@@ -303,6 +319,34 @@ func TestNormalizeIntentDropsKeep(t *testing.T) {
 	}
 	if len(got.Rules) != 1 || got.Rules[0].Port != "443" || got.Rules[0].Origin != v2.FirewallOriginWeb {
 		t.Fatalf("%+v", got.Rules)
+	}
+}
+
+func TestDropOrphanInboundRules(t *testing.T) {
+	rules := []v2.FirewallRule{
+		{ID: "web", Origin: v2.FirewallOriginWeb, Port: "80"},
+		{ID: "live", Origin: v2.FirewallOriginInbound, InboundID: "in-live", Port: "443"},
+		{ID: "gone", Origin: v2.FirewallOriginInbound, InboundID: "in-gone", Port: "2083"},
+		{ID: "empty", Origin: v2.FirewallOriginInbound, Port: "45633"},
+	}
+	got := DropOrphanInboundRules(rules, map[string]struct{}{"in-live": {}})
+	if len(got) != 2 || got[0].ID != "web" || got[1].ID != "live" {
+		t.Fatalf("orphans must drop: %+v", got)
+	}
+	if kept := DropOrphanInboundRules(rules, nil); len(kept) != 4 {
+		t.Fatalf("unknown inbound list must not prune: %+v", kept)
+	}
+}
+
+func TestDropOwnedHostNoise(t *testing.T) {
+	got := DropOwnedHostNoise([]v2.FirewallHostRule{
+		{Key: "meta", Raw: "type filter hook input priority -1; policy accept;", Reason: "unsupported match"},
+		{Key: "plus", Raw: "jump LITE_PLUS", Comment: "nft inet filter input 3"},
+		{Key: "owned", Raw: "tcp dport 443 accept", Comment: "nft inet filter LITE_PLUS 8"},
+		{Key: "ssh", Raw: "tcp dport 22 accept", Comment: "nft ip filter 1PANEL_BASIC 12", Adoptable: true, Port: "22"},
+	})
+	if len(got) != 1 || got[0].Key != "ssh" {
+		t.Fatalf("%+v", got)
 	}
 }
 

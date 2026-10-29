@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -67,8 +68,18 @@ func NormalizeIntent(intent v2.FirewallIntent) (v2.FirewallIntent, error) {
 	}
 	intent.SshPort = sshPort
 	intent.OmitKeep = NormalizeOmitKeep(intent.OmitKeep)
+	sortIntentRules(rules)
 	intent.Rules = rules
 	return intent, nil
+}
+
+func sortIntentRules(rules []v2.FirewallRule) {
+	sort.SliceStable(rules, func(i, j int) bool {
+		if rules[i].Priority != rules[j].Priority {
+			return rules[i].Priority < rules[j].Priority
+		}
+		return rules[i].ID < rules[j].ID
+	})
 }
 
 func RuleIdentityKey(rule v2.FirewallRule) string {
@@ -439,6 +450,55 @@ func RewriteKeepSSH(keep []v2.FirewallRule, sshPort string, stackV4, stackV6 boo
 		})
 	}
 	return out
+}
+
+func DropOrphanInboundRules(rules []v2.FirewallRule, live map[string]struct{}) []v2.FirewallRule {
+	if live == nil {
+		return rules
+	}
+	out := make([]v2.FirewallRule, 0, len(rules))
+	for _, rule := range rules {
+		if strings.EqualFold(strings.TrimSpace(rule.Origin), v2.FirewallOriginInbound) {
+			id := strings.TrimSpace(rule.InboundID)
+			if id == "" {
+				continue
+			}
+			if _, ok := live[id]; !ok {
+				continue
+			}
+		}
+		out = append(out, rule)
+	}
+	return out
+}
+
+func DropOwnedHostNoise(rules []v2.FirewallHostRule) []v2.FirewallHostRule {
+	if len(rules) == 0 {
+		return rules
+	}
+	out := make([]v2.FirewallHostRule, 0, len(rules))
+	for _, rule := range rules {
+		if ownedHostNoise(rule) {
+			continue
+		}
+		out = append(out, rule)
+	}
+	return out
+}
+
+func ownedHostNoise(rule v2.FirewallHostRule) bool {
+	raw := strings.ToLower(strings.TrimSpace(rule.Raw + " " + rule.Comment + " " + rule.Key))
+	if strings.Contains(raw, "lite_plus") || strings.Contains(raw, "lite-plus:") {
+		return true
+	}
+	line := strings.ToLower(strings.TrimSpace(rule.Raw))
+	if strings.HasPrefix(line, "type ") || strings.HasPrefix(line, "policy ") || strings.HasPrefix(line, "hook ") {
+		return true
+	}
+	if strings.Contains(line, "hook") && strings.Contains(line, "priority") {
+		return true
+	}
+	return false
 }
 
 func AttachKeepRules(intent v2.FirewallIntent, keep []v2.FirewallRule) v2.FirewallIntent {

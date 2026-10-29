@@ -55,6 +55,13 @@ func TestSaveFirewallValidatesBeforeGrant(t *testing.T) {
 	if !strings.Contains(string(src), "DropOmittedKeep(") {
 		t.Fatal("view must not reattach omitted keep holes")
 	}
+	if !strings.Contains(save, "DropOrphanInboundRules(") {
+		t.Fatal("save must drop inbound-origin rules whose inbound is gone")
+	}
+	get := extractGoFunc(string(src), "func adminGetFirewall")
+	if !strings.Contains(get, "reconcileOrphanInbound(") {
+		t.Fatal("get must drop leftover inbound-origin rules after the inbound was deleted")
+	}
 	adopt := extractGoFunc(string(src), "func adminAdoptFirewall")
 	ensure = strings.Index(adopt, "firewall.EnsureApplyAllowed(")
 	grant = strings.Index(adopt, "consumeScheduledExecGrant(")

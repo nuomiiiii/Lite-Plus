@@ -41,6 +41,26 @@ func TestParseOptionalJSONTime(t *testing.T) {
 	}
 }
 
+func TestNodemgtSettingsMetadataFlagsDoNotRestartListener(t *testing.T) {
+	src, err := os.ReadFile("admin.nodemgt.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	if !strings.Contains(text, `SubPublishName     *bool   `+"`json:\"sub_publish_name\"`") {
+		t.Fatal("settings.set must treat sub_publish_name as optional")
+	}
+	if !strings.Contains(text, `SubPublishUserinfo *bool   `+"`json:\"sub_publish_userinfo\"`") {
+		t.Fatal("settings.set must treat sub_publish_userinfo as optional")
+	}
+	if !strings.Contains(text, `restartSub := p.SubListenPort != nil || p.SubPath != nil || p.SubReuseHTTPS != nil`) {
+		t.Fatal("subscription listener restart must stay limited to port, path, and HTTPS reuse")
+	}
+	if strings.Contains(text, "restartSub") && strings.Contains(text, "SubPublishName != nil || p.SubPublishUserinfo") {
+		t.Fatal("metadata flags must not restart the subscription listener")
+	}
+}
+
 func TestNodemgtShouldClearPlan(t *testing.T) {
 	if nodemgtShouldClearPlan("", false) {
 		t.Fatal("new user with no plan must not unassign")
