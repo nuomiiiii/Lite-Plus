@@ -270,6 +270,7 @@ func WebSocketV2RPC(c *gin.Context) {
 		agent_runtime.DeleteClientConditionally(uuid, conn)
 		notifierOffline(uuid, conn.ID)
 	}()
+	firewall.SyncOnConnect(uuid)
 	if !pushQueuedV2Events(conn, uuid) {
 		return
 	}

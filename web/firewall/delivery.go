@@ -228,7 +228,7 @@ func PushPending(uuid string) {
 			return
 		}
 		for _, row := range rows {
-			pushRow(row)
+			pushRow(row, false)
 		}
 		return
 	}
@@ -236,17 +236,32 @@ func PushPending(uuid string) {
 	if err != nil || row == nil {
 		return
 	}
-	pushRow(*row)
+	pushRow(*row, false)
 }
 
-func pushRow(row models.ClientFirewallIntent) {
+func SyncOnConnect(uuid string) {
+	uuid = strings.TrimSpace(uuid)
+	if uuid == "" {
+		return
+	}
+	row, err := fwstore.Get(uuid)
+	if err != nil || row == nil {
+		return
+	}
+	pushRow(*row, true)
+}
+
+func pushRow(row models.ClientFirewallIntent, force bool) {
 	if !remote.RemoteManagementEnabled() {
 		return
 	}
-	if row.Revision == 0 || row.AppliedRevision >= row.Revision {
+	if row.Revision == 0 {
 		return
 	}
-	if applyInFlight(row) {
+	if !force && row.AppliedRevision >= row.Revision {
+		return
+	}
+	if !force && applyInFlight(row) {
 		return
 	}
 	client, err := clients.GetClientByUUID(row.Client)

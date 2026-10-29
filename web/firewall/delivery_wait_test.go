@@ -55,6 +55,12 @@ func TestDispatchRegistersWaiterBeforeSend(t *testing.T) {
 	if strings.Contains(push, "DispatchApply(") || !strings.Contains(push, "dispatchApply(") || !strings.Contains(push, "applyInFlight(") {
 		t.Fatal("background retry must not wait on apply, and must skip an in-flight send")
 	}
+	if !strings.Contains(push, "force") || !strings.Contains(text, "func SyncOnConnect") {
+		t.Fatal("agent reconnect must re-apply the panel intent even if the last apply was already marked done")
+	}
+	if !strings.Contains(push, "if !force && applyInFlight(row)") {
+		t.Fatal("reconnect apply must not wait out a lost in-flight send")
+	}
 	inflight := extractFunc(text, "func applyInFlight")
 	if !strings.Contains(inflight, "DeliverySent") || !strings.Contains(inflight, "applyWait") || !strings.Contains(inflight, "applyRetrySkew") {
 		t.Fatal("in-flight apply must cover the sent window plus retry skew")

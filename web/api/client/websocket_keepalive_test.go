@@ -3,6 +3,7 @@ package client
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -144,4 +145,27 @@ func startClientProtocolPings(conn *websocket.Conn, interval time.Duration) func
 		}
 	}()
 	return func() { close(done) }
+}
+
+func TestWebSocketConnectReappliesFirewallIntent(t *testing.T) {
+	src, err := os.ReadFile("report_v2.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	connect := strings.Index(text, "func WebSocketV2RPC")
+	loop := strings.Index(text, "for {\n\t\trefreshAgentWebSocketReadDeadline")
+	if connect < 0 || loop < 0 || loop < connect {
+		t.Fatal("WebSocketV2RPC connect setup not found")
+	}
+	setup := text[connect:loop]
+	if !strings.Contains(setup, "firewall.SyncOnConnect(uuid)") {
+		t.Fatal("agent reconnect must push the panel firewall intent so host persist cannot revive deleted rules")
+	}
+	if strings.Contains(setup, "go firewall.SyncOnConnect") {
+		t.Fatal("reconnect apply must be queued before the first websocket flush")
+	}
+	if strings.Index(setup, "firewall.SyncOnConnect(uuid)") > strings.Index(setup, "pushQueuedV2Events(") {
+		t.Fatal("reconnect apply must be queued before the first websocket flush")
+	}
 }
