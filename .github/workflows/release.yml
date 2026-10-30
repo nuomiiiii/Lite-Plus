@@ -21,6 +21,11 @@ on:
         required: false
         default: ""
         type: string
+      regenerate_notes:
+        description: After attaching binaries, regenerate GitHub Release notes from commits. Same-version rebuilds must pass false so existing notes stay.
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   actions: write
@@ -306,6 +311,7 @@ jobs:
         run: gh release upload "$VERSION" SHA256SUMS lite-update.json --repo "$GITHUB_REPOSITORY" --clobber
 
   update-release-notes:
+    if: ${{ github.event.inputs.regenerate_notes != 'false' }}
     needs: [prepare, build-and-push-docker, publish-update-manifest]
     runs-on: ubuntu-latest
     steps:

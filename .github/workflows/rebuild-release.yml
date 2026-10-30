@@ -135,4 +135,5 @@ jobs:
             -f tag="$VERSION" \
             -f version_hash="$VERSION_HASH" \
             -f web_ref="$FRONTEND_REF" \
-            -f theme_ref="$THEME_REF"
+            -f theme_ref="$THEME_REF" \
+            -f regenerate_notes=false
