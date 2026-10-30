@@ -266,6 +266,20 @@ func TestNormalizeIntentSortsByPriority(t *testing.T) {
 	}
 }
 
+func TestNormalizeIntentKeepsDeclaredStack(t *testing.T) {
+	got, err := NormalizeIntent(v2.FirewallIntent{
+		Rules: []v2.FirewallRule{
+			{Action: "allow", Protocol: "tcp", Port: "2083", Stack: "v6"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Rules) != 1 || got.Rules[0].Stack != "v6" || got.Rules[0].Source != "" {
+		t.Fatalf("unsourced v6 must not be copied onto v4: %+v", got.Rules)
+	}
+}
+
 func TestNormalizeIntentExpandsBothProtocol(t *testing.T) {
 	got, err := NormalizeIntent(v2.FirewallIntent{
 		Rules: []v2.FirewallRule{
