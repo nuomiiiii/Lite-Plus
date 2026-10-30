@@ -68,6 +68,55 @@ class PlusFollowTests(unittest.TestCase):
             self.assertEqual(data["lite_hash"], "n8k2m5y")
             self.assertEqual(data["lite_web_hash"], "n8k2m5y")
 
+    def test_rewrite_web_keeps_plus_offline_picker_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            picker = root / "src" / "components" / "remote"
+            tests = root / "tests"
+            picker.mkdir(parents=True)
+            tests.mkdir()
+            (root / "package.json").write_text('{"name": "lite-web", "version": "2.3.10"}\n', encoding="utf-8")
+            (picker / "RemoteNodePicker.tsx").write_text(
+                "allowOffline?: boolean;\n"
+                "const selectable = allowOffline || knownOnline;\n"
+                'onClick={() => { if (knownOnline) onSelect(node); }}\n'
+                'onKeyDown={(event) => { if (!knownOnline || (event.key !== "Enter" && event.key !== " ")) return; }}\n',
+                encoding="utf-8",
+            )
+            (tests / "remoteNodePicker.test.ts").write_text(
+                'assert.equal(pickerSource.includes("if (knownOnline) onSelect(node)"), true);\n'
+                'assert.equal(pickerSource.includes(\'event.key !== "Enter" && event.key !== " "\'), true);\n',
+                encoding="utf-8",
+            )
+            plus_follow.rewrite_web(root, "0.1.3", "2.3.10", "2.3.10", "2.3.10.0", "1.2.9", "h7n2w5k", "")
+            picker_text = (picker / "RemoteNodePicker.tsx").read_text(encoding="utf-8")
+            test_text = (tests / "remoteNodePicker.test.ts").read_text(encoding="utf-8")
+            self.assertIn("if (selectable) onSelect(node)", picker_text)
+            self.assertNotIn("if (knownOnline) onSelect(node)", picker_text)
+            self.assertIn('if (!selectable || (event.key !== "Enter" && event.key !== " "))', picker_text)
+            self.assertIn("if (selectable) onSelect(node)", test_text)
+            self.assertNotIn("if (knownOnline) onSelect(node)", test_text)
+
+    def test_rewrite_web_leaves_lite_online_only_picker(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            picker = root / "src" / "components" / "remote"
+            tests = root / "tests"
+            picker.mkdir(parents=True)
+            tests.mkdir()
+            (root / "package.json").write_text('{"name": "lite-web", "version": "2.3.10"}\n', encoding="utf-8")
+            (picker / "RemoteNodePicker.tsx").write_text(
+                'onClick={() => { if (knownOnline) onSelect(node); }}\n',
+                encoding="utf-8",
+            )
+            (tests / "remoteNodePicker.test.ts").write_text(
+                'assert.equal(pickerSource.includes("if (knownOnline) onSelect(node)"), true);\n',
+                encoding="utf-8",
+            )
+            plus_follow.preserve_plus_remote_picker(root)
+            self.assertIn("if (knownOnline) onSelect(node)", (picker / "RemoteNodePicker.tsx").read_text(encoding="utf-8"))
+            self.assertIn("if (knownOnline) onSelect(node)", (tests / "remoteNodePicker.test.ts").read_text(encoding="utf-8"))
+
     def test_rewrite_web_keeps_plus_package_name(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = pathlib.Path(raw)

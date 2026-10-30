@@ -22,6 +22,10 @@ BASELINE_KEYS = (
 HASH_RE = re.compile(r"(?:lite|komari)-version-hash:\s*([A-Za-z0-9]{7})", re.I)
 HASH_MARKER_RE = re.compile(r"<!--\s*(?:lite|komari)-version-hash:\s*[A-Za-z0-9]{7}\s*-->", re.I)
 PLUS_HASH_ALPHABET = "abcdefghijklmnoprstuvwxyz0123456789"
+KNOWN_ONLINE_SELECT = "if (knownOnline) onSelect(node)"
+SELECTABLE_SELECT = "if (selectable) onSelect(node)"
+KNOWN_ONLINE_KEY = 'if (!knownOnline || (event.key !== "Enter" && event.key !== " "))'
+SELECTABLE_KEY = 'if (!selectable || (event.key !== "Enter" && event.key !== " "))'
 
 
 def parse_three(version: str) -> tuple[int, int, int]:
@@ -275,6 +279,30 @@ def rewrite_server(
     )
 
 
+def preserve_plus_remote_picker(root: pathlib.Path) -> None:
+    """Keep Plus allowOffline selection after Lite still asserts knownOnline-only clicks."""
+    picker = root / "src" / "components" / "remote" / "RemoteNodePicker.tsx"
+    test = root / "tests" / "remoteNodePicker.test.ts"
+    if not picker.is_file():
+        return
+    picker_text = picker.read_text(encoding="utf-8")
+    if "allowOffline" not in picker_text:
+        return
+    replacements = (
+        (KNOWN_ONLINE_SELECT, SELECTABLE_SELECT),
+        (KNOWN_ONLINE_KEY, SELECTABLE_KEY),
+    )
+    files = [(picker, picker_text)]
+    if test.is_file():
+        files.append((test, test.read_text(encoding="utf-8")))
+    for path, text in files:
+        updated = text
+        for old, new in replacements:
+            updated = updated.replace(old, new)
+        if updated != text:
+            path.write_text(updated, encoding="utf-8")
+
+
 def rewrite_web(
     root: pathlib.Path,
     plus: str,
@@ -312,6 +340,7 @@ def rewrite_web(
             "lite_theme": lite_theme,
         },
     )
+    preserve_plus_remote_picker(root)
 
 
 def main() -> None:
