@@ -94,8 +94,36 @@ class PlusFollowTests(unittest.TestCase):
             self.assertIn("if (selectable) onSelect(node)", picker_text)
             self.assertNotIn("if (knownOnline) onSelect(node)", picker_text)
             self.assertIn('if (!selectable || (event.key !== "Enter" && event.key !== " "))', picker_text)
-            self.assertIn("if (selectable) onSelect(node)", test_text)
-            self.assertNotIn("if (knownOnline) onSelect(node)", test_text)
+            self.assertIn('includes("if (selectable) onSelect(node)"), true', test_text)
+            self.assertNotIn('includes("if (knownOnline) onSelect(node)"), true', test_text)
+
+    def test_rewrite_web_keeps_plus_negative_known_online_assertion(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            picker = root / "src" / "components" / "remote"
+            tests = root / "tests"
+            picker.mkdir(parents=True)
+            tests.mkdir()
+            (root / "package.json").write_text('{"name": "lite-plus-web", "version": "0.1.3"}\n', encoding="utf-8")
+            (picker / "RemoteNodePicker.tsx").write_text(
+                "allowOffline?: boolean;\n"
+                "const selectable = allowOffline || knownOnline;\n"
+                "onClick={() => { if (selectable) onSelect(node); }}\n",
+                encoding="utf-8",
+            )
+            (tests / "remoteNodePicker.test.ts").write_text(
+                'assert.equal(pickerSource.includes("if (selectable) onSelect(node)"), true);\n'
+                'assert.equal(pickerSource.includes("if (knownOnline) onSelect(node)"), false);\n',
+                encoding="utf-8",
+            )
+            plus_follow.preserve_plus_remote_picker(root)
+            picker_text = (picker / "RemoteNodePicker.tsx").read_text(encoding="utf-8")
+            test_text = (tests / "remoteNodePicker.test.ts").read_text(encoding="utf-8")
+            self.assertIn("if (selectable) onSelect(node)", picker_text)
+            self.assertNotIn("if (knownOnline) onSelect(node)", picker_text)
+            self.assertIn('includes("if (selectable) onSelect(node)"), true', test_text)
+            self.assertIn('includes("if (knownOnline) onSelect(node)"), false', test_text)
+            self.assertNotIn('includes("if (selectable) onSelect(node)"), false', test_text)
 
     def test_rewrite_web_leaves_lite_online_only_picker(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

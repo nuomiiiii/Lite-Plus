@@ -288,19 +288,22 @@ def preserve_plus_remote_picker(root: pathlib.Path) -> None:
     picker_text = picker.read_text(encoding="utf-8")
     if "allowOffline" not in picker_text:
         return
-    replacements = (
-        (KNOWN_ONLINE_SELECT, SELECTABLE_SELECT),
-        (KNOWN_ONLINE_KEY, SELECTABLE_KEY),
+    updated_picker = picker_text.replace(KNOWN_ONLINE_SELECT, SELECTABLE_SELECT).replace(
+        KNOWN_ONLINE_KEY, SELECTABLE_KEY
     )
-    files = [(picker, picker_text)]
-    if test.is_file():
-        files.append((test, test.read_text(encoding="utf-8")))
-    for path, text in files:
-        updated = text
-        for old, new in replacements:
-            updated = updated.replace(old, new)
-        if updated != text:
-            path.write_text(updated, encoding="utf-8")
+    if updated_picker != picker_text:
+        picker.write_text(updated_picker, encoding="utf-8")
+    if not test.is_file():
+        return
+    # Lite asserts the old click must exist. Do not rewrite Plus's negative
+    # assertion, or includes("if (knownOnline)..."), false becomes selectable false.
+    test_text = test.read_text(encoding="utf-8")
+    updated_test = test_text.replace(
+        f'includes("{KNOWN_ONLINE_SELECT}"), true',
+        f'includes("{SELECTABLE_SELECT}"), true',
+    )
+    if updated_test != test_text:
+        test.write_text(updated_test, encoding="utf-8")
 
 
 def rewrite_web(
