@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -35,6 +36,7 @@ class PlusFollowTests(unittest.TestCase):
         server = (pathlib.Path(__file__).resolve().parent / "follow-c-server.txt").read_text(encoding="utf-8")
         self.assertIn("src/i18n/locales/zh_CN.json", web)
         self.assertIn("web/mcp/oauth.go", server)
+        self.assertIn("cmd/app.go", server)
 
     def test_theme_git_ref(self) -> None:
         self.assertEqual(plus_follow.theme_git_ref(""), "v1.2.9")
@@ -199,6 +201,126 @@ class PlusFollowTests(unittest.TestCase):
         self.assertEqual(merged["nested"]["y"], "new")
         both = plus_follow.merge_json_value({"k": "old"}, {"k": "plus"}, {"k": "lite"})
         self.assertEqual(both["k"], "plus")
+
+    def test_resolve_c_hunk_drops_plus_deleted_func_lite_still_edits(self) -> None:
+        base = "func Legacy() {\n\told()\n}\n"
+        ours = ""
+        theirs = "func Legacy() {\n\tnew()\n}\n"
+        self.assertEqual(plus_follow.resolve_c_hunk(ours, theirs, base), "")
+
+    def test_resolve_c_hunk_keeps_lite_new_func(self) -> None:
+        base = "func Keep() {}\n"
+        ours = ""
+        theirs = "func LiteNew() {}\n"
+        self.assertEqual(plus_follow.resolve_c_hunk(ours, theirs, base), theirs)
+
+    def test_resolve_c_hunk_unions_imports_and_skips_plus_deletes(self) -> None:
+        base = '\t"old"\n\t"gone"\n'
+        ours = '\t"old"\n\t"plus"\n'
+        theirs = '\t"old"\n\t"gone"\n\t"lite"\n'
+        merged = plus_follow.resolve_c_hunk(ours, theirs, base)
+        self.assertIn('"plus"', merged)
+        self.assertIn('"lite"', merged)
+        self.assertNotIn('"gone"', merged)
+
+    def test_merge_c_text_keeps_plus_delete_and_lite_listen_fix(self) -> None:
+        base = """package p
+
+import (
+	"old"
+)
+
+func Keep() {
+	listen()
+}
+
+func Legacy() {
+	old()
+}
+
+func After() {}
+"""
+        ours = """package p
+
+import (
+	"old"
+	"plus"
+)
+
+func Keep() {
+	listen()
+}
+
+func PlusHook() {}
+
+func After() {}
+"""
+        theirs = """package p
+
+import (
+	"old"
+	"lite"
+)
+
+func Keep() {
+	serveHTTP()
+}
+
+func Legacy() {
+	new()
+}
+
+func LiteNew() {}
+
+func After() {}
+"""
+        merged = plus_follow.merge_c_text(base, ours, theirs)
+        self.assertIsNotNone(merged)
+        self.assertIn('\t"plus"', merged)
+        self.assertIn('\t"lite"', merged)
+        self.assertIn("func PlusHook()", merged)
+        self.assertIn("func LiteNew()", merged)
+        self.assertNotIn("func Legacy()", merged)
+        self.assertIn("serveHTTP()", merged)
+
+    def test_apply_ours_resolves_c_class_go(self) -> None:
+        base = 'package p\n\nfunc Keep() { x() }\n\nfunc Legacy() { old() }\n'
+        ours = 'package p\n\nfunc Keep() { x() }\n\nfunc PlusHook() {}\n'
+        theirs = 'package p\n\nfunc Keep() { y() }\n\nfunc Legacy() { new() }\n'
+        with tempfile.TemporaryDirectory() as raw:
+            repo = pathlib.Path(raw) / "repo"
+            repo.mkdir()
+
+            def git(*args: str) -> None:
+                subprocess.check_call(["git", "-C", str(repo), *args])
+
+            git("init", "-b", "main")
+            git("config", "user.email", "follow@test")
+            git("config", "user.name", "follow-test")
+            (repo / "cmd").mkdir()
+            (repo / "cmd" / "app.go").write_text(base, encoding="utf-8")
+            git("add", "cmd/app.go")
+            git("commit", "-m", "base")
+            git("checkout", "-b", "lite")
+            (repo / "cmd" / "app.go").write_text(theirs, encoding="utf-8")
+            git("add", "cmd/app.go")
+            git("commit", "-m", "lite")
+            git("checkout", "main")
+            (repo / "cmd" / "app.go").write_text(ours, encoding="utf-8")
+            git("add", "cmd/app.go")
+            git("commit", "-m", "plus")
+            merge = subprocess.run(["git", "-C", str(repo), "merge", "--no-edit", "lite"], capture_output=True)
+            self.assertNotEqual(merge.returncode, 0)
+            ours_list = repo / "ours.txt"
+            c_list = repo / "c.txt"
+            ours_list.write_text("\n", encoding="utf-8")
+            c_list.write_text("cmd/app.go\n", encoding="utf-8")
+            self.assertEqual(plus_follow.apply_ours(repo, ours_list, c_list), "ok")
+            text = (repo / "cmd" / "app.go").read_text(encoding="utf-8")
+            self.assertIn("func PlusHook()", text)
+            self.assertIn("y()", text)
+            self.assertNotIn("func Legacy()", text)
+            self.assertNotIn("<<<<<<<", text)
 
 
 if __name__ == "__main__":

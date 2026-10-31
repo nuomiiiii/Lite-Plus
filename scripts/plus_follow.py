@@ -9,6 +9,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 
 BASELINE_KEYS = (
     "lite",
@@ -196,6 +197,172 @@ def merge_conflict_json(repo: pathlib.Path, name: str) -> bool:
     return True
 
 
+DECL_HEAD_RE = re.compile(r"(?m)^(func\s+(?:\([^)]+\)\s+)?\w+|type\s+\w+|const\s+\w+|var\s+\w+)")
+IMPORT_LINE_RE = re.compile(r'^[\t ]*(?:[A-Za-z_][\w.]*\s+)?"[^"]+"\s*$|^[\t ]*import\s+"[^"]+"\s*$')
+
+
+def _stripped_lines(text: str) -> set[str]:
+    return {line.strip() for line in text.splitlines() if line.strip()}
+
+
+def _looks_like_imports(text: str) -> bool:
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    hits = sum(1 for line in lines if IMPORT_LINE_RE.match(line) or "github.com/" in line)
+    return hits * 2 >= len(lines)
+
+
+def _hunk_decl_in_base(theirs: str, base_lines: set[str]) -> bool:
+    for match in DECL_HEAD_RE.finditer(theirs):
+        head = match.group(1).strip()
+        for line in base_lines:
+            if line == head:
+                return True
+            if line.startswith(head) and len(line) > len(head) and line[len(head)] in " \t({":
+                return True
+    return False
+
+
+def resolve_c_hunk(ours: str, theirs: str, base: str) -> str:
+    """Resolve one C-class conflict hunk. Plus wins overlaps; Lite-only additions stay."""
+    if ours == theirs:
+        return ours
+    base_lines = _stripped_lines(base)
+    ours_stripped = ours.strip()
+    theirs_stripped = theirs.strip()
+    if not ours_stripped:
+        if not theirs_stripped:
+            return ours
+        if _looks_like_imports(theirs) or not DECL_HEAD_RE.search(theirs):
+            kept: list[str] = []
+            for line in theirs.splitlines(keepends=True):
+                stripped = line.strip()
+                if not stripped or stripped in base_lines:
+                    continue
+                kept.append(line)
+            return "".join(kept)
+        if _hunk_decl_in_base(theirs, base_lines):
+            return ours
+        return theirs
+    if not theirs_stripped:
+        return ours
+    if _looks_like_imports(ours) or _looks_like_imports(theirs):
+        result: list[str] = []
+        seen = set()
+        for line in ours.splitlines(keepends=True):
+            result.append(line)
+            stripped = line.strip()
+            if stripped:
+                seen.add(stripped)
+        for line in theirs.splitlines(keepends=True):
+            stripped = line.strip()
+            if not stripped or stripped in seen:
+                continue
+            if stripped in base_lines:
+                continue
+            result.append(line)
+            seen.add(stripped)
+        return "".join(result)
+    return ours
+
+
+def resolve_conflict_markers(text: str, base: str) -> str | None:
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        if not lines[i].startswith("<<<<<<<"):
+            out.append(lines[i])
+            i += 1
+            continue
+        i += 1
+        ours_hunk: list[str] = []
+        while i < len(lines) and not lines[i].startswith("|||||||") and not lines[i].startswith("======="):
+            ours_hunk.append(lines[i])
+            i += 1
+        if i < len(lines) and lines[i].startswith("|||||||"):
+            i += 1
+            while i < len(lines) and not lines[i].startswith("======="):
+                i += 1
+        if i >= len(lines) or not lines[i].startswith("======="):
+            return None
+        i += 1
+        theirs_hunk: list[str] = []
+        while i < len(lines) and not lines[i].startswith(">>>>>>>"):
+            theirs_hunk.append(lines[i])
+            i += 1
+        if i >= len(lines):
+            return None
+        i += 1
+        out.append(resolve_c_hunk("".join(ours_hunk), "".join(theirs_hunk), base))
+    merged = "".join(out)
+    if merged.startswith("<<<<<<<") or "\n<<<<<<<" in merged:
+        return None
+    return merged
+
+
+def git_merge_file_text(base: str, ours: str, theirs: str) -> str | None:
+    with tempfile.TemporaryDirectory() as raw:
+        folder = pathlib.Path(raw)
+        (folder / "base").write_text(base, encoding="utf-8")
+        (folder / "ours").write_text(ours, encoding="utf-8")
+        (folder / "theirs").write_text(theirs, encoding="utf-8")
+        result = subprocess.run(
+            [
+                "git",
+                "merge-file",
+                "-p",
+                "-L",
+                "ours",
+                "-L",
+                "base",
+                "-L",
+                "theirs",
+                str(folder / "ours"),
+                str(folder / "base"),
+                str(folder / "theirs"),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        # git merge-file exits with the conflict count (0 = clean). Negative is a real error.
+        if result.returncode < 0 or (result.returncode != 0 and not result.stdout):
+            return None
+        return result.stdout
+
+
+def merge_c_text(base: str, ours: str, theirs: str) -> str | None:
+    if ours == theirs:
+        return ours
+    if ours == base:
+        return theirs
+    if theirs == base:
+        return ours
+    merged = git_merge_file_text(base, ours, theirs)
+    if merged is None:
+        return None
+    if "<<<<<<<" not in merged:
+        return merged
+    return resolve_conflict_markers(merged, base)
+
+
+def merge_conflict_c(repo: pathlib.Path, name: str) -> bool:
+    ours_text = git_show_stage(repo, 2, name)
+    theirs_text = git_show_stage(repo, 3, name)
+    if ours_text is None or theirs_text is None:
+        return False
+    merged = merge_c_text(git_show_stage(repo, 1, name) or "", ours_text, theirs_text)
+    if merged is None:
+        return False
+    path = repo / pathlib.Path(*name.split("/"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(merged, encoding="utf-8")
+    subprocess.check_call(["git", "add", "--", name], cwd=repo)
+    return True
+
+
 def apply_ours(repo: pathlib.Path, ours_file: pathlib.Path, c_file: pathlib.Path) -> str:
     ours = load_list(ours_file)
     c_files = load_list(c_file)
@@ -207,6 +374,10 @@ def apply_ours(repo: pathlib.Path, ours_file: pathlib.Path, c_file: pathlib.Path
     remaining = unmerged_files(repo)
     for name in remaining:
         if name in c_files and name.endswith(".json") and merge_conflict_json(repo, name):
+            continue
+    remaining = unmerged_files(repo)
+    for name in remaining:
+        if name in c_files and not name.endswith(".json") and merge_conflict_c(repo, name):
             continue
     remaining = unmerged_files(repo)
     if not remaining:

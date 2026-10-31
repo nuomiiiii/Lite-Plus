@@ -1,6 +1,7 @@
 #!/bin/sh
 # Merge an upstream Lite tag into a Plus checkout. B-class conflicts keep Plus.
-# C-class or other leftover conflicts exit 2 so the workflow can open a PR.
+# C-class JSON keeps Plus keys and Lite additions. Other C-class files 3-way merge:
+# Plus deletions win, Lite-only functions/imports stay. Leftovers exit 2 for a PR.
 set -eu
 
 REPO="${1:?repo dir}"
