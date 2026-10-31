@@ -42,6 +42,7 @@ import (
 	logger "github.com/nuomiiiii/lite/utils/log"
 	"github.com/nuomiiiii/lite/utils/messageSender"
 	"github.com/nuomiiiii/lite/utils/notifier"
+	"github.com/nuomiiiii/lite/utils/tcplisten"
 	agent_runtime "github.com/nuomiiiii/lite/web/agent"
 	"github.com/nuomiiiii/lite/web/api"
 	"github.com/nuomiiiii/lite/web/api/admin"
@@ -440,7 +441,7 @@ func (a *App) RunInstallGuide() (bool, error) {
 	serverErr := make(chan error, 1)
 	logger.Infof("server", "First-run installation guide is available on %s", flags.Listen)
 	go func() {
-		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := serveHTTP(a.server); err != nil && err != http.ErrServerClosed {
 			serverErr <- err
 		}
 	}()
@@ -465,6 +466,83 @@ func (a *App) RunInstallGuide() (bool, error) {
 	}
 }
 
+<<<<<<< HEAD
+=======
+// RunLegacyUpgrade starts a restricted HTTP server on the normal listen
+// address. It returns only after the migration finishes and the restricted
+// listener has released the port, or after shutdown/interruption.
+func (a *App) RunLegacyUpgrade(summary migrations.LegacyMonitoringSummary) (bool, error) {
+	a.initOAuth()
+	controller := upgradeweb.NewController(dbcore.GetDBInstance(), summary)
+	controller.Activate()
+	defer controller.Deactivate()
+
+	r := gin.New()
+	r.Use(logger.GinLogger())
+	r.Use(logger.GinRecovery())
+	cors := security.NewCorsController(a.settings.CorsOriginCheckEnabled, a.settings.CorsAllowedOrigins)
+	r.Use(cors.Middleware())
+	r.Use(api.IdentityMiddleware())
+	r.Use(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api") {
+			c.Header("Cache-Control", "no-store")
+		}
+		c.Next()
+	})
+
+	controller.Register(r)
+	frontendpublic.Static(r.Group("/"), func(handlers ...gin.HandlerFunc) {
+		r.NoRoute(func(c *gin.Context) {
+			requestPath := c.Request.URL.Path
+			if strings.HasPrefix(requestPath, "/api") {
+				api.RespondError(c, http.StatusNotFound, "Not found in upgrade mode")
+				return
+			}
+			if c.Request.Method == http.MethodGet && requestPath != upgradeweb.PagePath && filepath.Ext(requestPath) == "" {
+				c.Redirect(http.StatusTemporaryRedirect, upgradeweb.PagePath)
+				return
+			}
+			for _, handler := range handlers {
+				handler(c)
+				if c.IsAborted() {
+					return
+				}
+			}
+		})
+	})
+
+	a.engine = r
+	a.server = &http.Server{Addr: flags.Listen, Handler: r}
+	serverErr := make(chan error, 1)
+	logger.Infof("server", "Legacy monitoring data requires the 1.2.7 upgrade wizard on %s", flags.Listen)
+	go func() {
+		if err := serveHTTP(a.server); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(quit)
+
+	select {
+	case err := <-serverErr:
+		return false, fmt.Errorf("listen in upgrade mode: %w", err)
+	case <-quit:
+		return false, a.Shutdown()
+	case <-controller.Done():
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := a.server.Shutdown(ctx); err != nil {
+			return false, fmt.Errorf("stop upgrade server: %w", err)
+		}
+		a.server = nil
+		a.engine = nil
+		return true, nil
+	}
+}
+
+>>>>>>> refs/tags/2.3.10
 // RunMetricStorageUpgrade exposes only authentication and SQLite migration
 // progress. Normal application routes remain unavailable until validation
 // succeeds and the restricted listener releases the port.
@@ -513,7 +591,7 @@ func (a *App) RunMetricStorageUpgrade(summary metric.SQLiteMigrationSummary) (bo
 	serverErr := make(chan error, 1)
 	logger.Infof("server", "Metric storage upgrade progress is available on %s", flags.Listen)
 	go func() {
-		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := serveHTTP(a.server); err != nil && err != http.ErrServerClosed {
 			serverErr <- err
 		}
 	}()
@@ -765,7 +843,7 @@ func listenAndFinalizeStartup(
 	commitRestore func() error,
 	startBackground func() error,
 ) (net.Listener, error) {
-	listener, err := net.Listen("tcp", address)
+	listener, err := tcplisten.Listen("tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
@@ -783,6 +861,18 @@ func listenAndFinalizeStartup(
 	}
 	closeOnError = false
 	return listener, nil
+}
+
+func serveHTTP(server *http.Server) error {
+	addr := server.Addr
+	if addr == "" {
+		addr = ":http"
+	}
+	listener, err := tcplisten.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return server.Serve(listener)
 }
 
 // Shutdown 优雅关闭：先停止接收新请求，再反序执行已登记的清理函数。
