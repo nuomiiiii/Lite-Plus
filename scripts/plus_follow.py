@@ -84,6 +84,50 @@ def patch_release_body(body: str, version_hash: str) -> str:
     return f"{marker}\n"
 
 
+SAME_VERSION_HEADING_RE = re.compile(r"^同版本(?:第.+次)?更新$")
+CN_ORDINALS = "一二三四五六七八九十"
+
+
+def _zh_ordinal(n: int) -> str:
+    if 1 <= n <= len(CN_ORDINALS):
+        return CN_ORDINALS[n - 1]
+    return str(n)
+
+
+def markdown_h2_sections(body: str) -> list[tuple[str, str]]:
+    pieces = re.split(r"(?m)^(## .+)$", body or "")
+    sections: list[tuple[str, str]] = []
+    index = 1
+    while index + 1 < len(pieces):
+        sections.append((pieces[index][3:].strip(), pieces[index + 1]))
+        index += 2
+    return sections
+
+
+def newest_lite_same_version_bullets(lite_body: str) -> list[str]:
+    for title, content in markdown_h2_sections(lite_body):
+        if SAME_VERSION_HEADING_RE.match(title):
+            return [line.strip() for line in content.splitlines() if line.strip().startswith("- ")]
+        if title.startswith("主要更新") or title.startswith("重要提示") or title.startswith("安装"):
+            return []
+    return []
+
+
+def append_same_version_notes(plus_body: str, lite_body: str) -> str:
+    """Keep Plus notes, and add Lite's newest 同版本更新 bullets after a same-version rebuild."""
+    text = plus_body or ""
+    missing = [bullet for bullet in newest_lite_same_version_bullets(lite_body) if bullet not in text]
+    if not missing:
+        return text
+    count = len(re.findall(r"(?m)^## 同版本第.+次更新\s*$", text))
+    block = f"## 同版本第{_zh_ordinal(count + 1)}次更新\n\n" + "\n".join(missing) + "\n"
+    match = HASH_MARKER_RE.search(text)
+    if not match:
+        return block + "\n" + text.lstrip()
+    rest = text[match.end() :].lstrip("\n")
+    return text[: match.end()] + "\n\n" + block + "\n" + rest
+
+
 def decide_same_version(
     base_lite_hash: str,
     base_web_hash: str,
@@ -520,7 +564,7 @@ def rewrite_web(
 def main() -> None:
     if len(sys.argv) < 2:
         raise SystemExit(
-            "usage: plus_follow.py bump|theme-ref|validate-baseline|rewrite-server|rewrite-web|apply-ours|release-hash|patch-hash|decide-same|new-hash ..."
+            "usage: plus_follow.py bump|theme-ref|validate-baseline|rewrite-server|rewrite-web|apply-ours|release-hash|patch-hash|append-same-version|decide-same|new-hash ..."
         )
     cmd = sys.argv[1]
     if cmd == "bump":
@@ -573,6 +617,19 @@ def main() -> None:
             raise SystemExit("usage: plus_follow.py patch-hash <file> <hash>")
         path = pathlib.Path(sys.argv[2])
         path.write_text(patch_release_body(path.read_text(encoding="utf-8"), sys.argv[3]), encoding="utf-8")
+        return
+    if cmd == "append-same-version":
+        if len(sys.argv) != 4:
+            raise SystemExit("usage: plus_follow.py append-same-version <plus-notes> <lite-notes>")
+        plus_path = pathlib.Path(sys.argv[2])
+        lite_path = pathlib.Path(sys.argv[3])
+        plus_path.write_text(
+            append_same_version_notes(
+                plus_path.read_text(encoding="utf-8"),
+                lite_path.read_text(encoding="utf-8"),
+            ),
+            encoding="utf-8",
+        )
         return
     if cmd == "new-hash":
         sys.stdout.write(new_plus_hash())

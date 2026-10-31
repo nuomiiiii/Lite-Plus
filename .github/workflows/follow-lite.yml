@@ -88,10 +88,14 @@ jobs:
           fi
           echo "follow Lite $TAG"
 
-          LITE_HASH="$(gh release view "$TAG" --repo nuomiiiii/Lite --json body --jq .body | python3 scripts/plus_follow.py release-hash -)"
+          LITE_NOTES="$RUNNER_TEMP/lite-release-body.md"
+          WEB_NOTES="$RUNNER_TEMP/lite-web-release-body.md"
+          gh release view "$TAG" --repo nuomiiiii/Lite --json body --jq .body > "$LITE_NOTES"
+          LITE_HASH="$(python3 scripts/plus_follow.py release-hash "$LITE_NOTES")"
           WEB_HASH=""
           if gh release view "$TAG" --repo nuomiiiii/Lite-web >/dev/null 2>&1; then
-            WEB_HASH="$(gh release view "$TAG" --repo nuomiiiii/Lite-web --json body --jq .body | python3 scripts/plus_follow.py release-hash -)"
+            gh release view "$TAG" --repo nuomiiiii/Lite-web --json body --jq .body > "$WEB_NOTES"
+            WEB_HASH="$(python3 scripts/plus_follow.py release-hash "$WEB_NOTES")"
           fi
           echo "Lite $TAG hash=$LITE_HASH lite_web_hash=$WEB_HASH"
 
@@ -225,9 +229,13 @@ jobs:
             local repo="$1"
             local tag="$2"
             local hash="$3"
+            local upstream_notes="${4:-}"
             local body_file="$RUNNER_TEMP/release-body-${repo##*/}.md"
             gh release view "$tag" --repo "$repo" --json body --jq .body > "$body_file"
             python3 scripts/plus_follow.py patch-hash "$body_file" "$hash"
+            if [ "$MODE" = "rebuild" ] && [ -n "$upstream_notes" ] && [ -f "$upstream_notes" ]; then
+              python3 scripts/plus_follow.py append-same-version "$body_file" "$upstream_notes"
+            fi
             gh release edit "$tag" --repo "$repo" --notes-file "$body_file"
           }
 
@@ -238,7 +246,7 @@ jobs:
             git -C "$WEB_DIR" push origin "refs/tags/$NEW_PLUS" --force
             gh release edit "$NEW_PLUS" --repo "$WEB_REPO" --draft=false --tag "$NEW_PLUS" --target "$WEB_SHA" --title "$NEW_PLUS" || \
               gh release edit "$NEW_PLUS" --repo "$WEB_REPO" --target "$WEB_SHA" --title "$NEW_PLUS"
-            patch_release_hash "$WEB_REPO" "$NEW_PLUS" "$NEW_PLUS_HASH"
+            patch_release_hash "$WEB_REPO" "$NEW_PLUS" "$NEW_PLUS_HASH" "$WEB_NOTES"
             gh release delete-asset "$NEW_PLUS" dist-release.zip --repo "$WEB_REPO" --yes || true
             gh workflow run publish-dist-release.yml --repo "$WEB_REPO" --ref "$NEW_PLUS" -f tag="$NEW_PLUS"
           else
@@ -254,6 +262,7 @@ jobs:
 
           git push origin HEAD:main
           if [ "$MODE" = "rebuild" ]; then
+            patch_release_hash "$GITHUB_REPOSITORY" "$NEW_PLUS" "$NEW_PLUS_HASH" "$LITE_NOTES"
             gh workflow run rebuild-release.yml \
               --repo "$GITHUB_REPOSITORY" \
               --ref main \

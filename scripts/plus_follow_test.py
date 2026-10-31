@@ -183,6 +183,33 @@ class PlusFollowTests(unittest.TestCase):
         self.assertEqual(plus_follow.decide_same_version("k8w2n5h", "", "k8w2n5h", "", "1", "0"), "rebuild")
         patched = plus_follow.patch_release_body("<!-- lite-version-hash: k3n8w2h -->\n\nhello\n", "a1b2c3d")
         self.assertTrue(patched.startswith("<!-- lite-version-hash: a1b2c3d -->"))
+        plus_notes = (
+            "<!-- lite-version-hash: a1b2c3d -->\n\n"
+            "## 重要提示\n\n"
+            "> [!IMPORTANT]\n> keep me\n"
+        )
+        lite_notes = (
+            "<!-- lite-version-hash: m8k2n5w -->\n\n"
+            "## 同版本第三次更新\n\n"
+            "- Linux 版 HTTP/HTTPS 不再使用多路径 TCP。\n\n"
+            "## 同版本第二次更新\n\n"
+            "- 旧的同版本条目不应再抄进来。\n\n"
+            "## 主要更新\n\n"
+            "- 更早的正式条目。\n"
+        )
+        appended = plus_follow.append_same_version_notes(plus_notes, lite_notes)
+        self.assertIn("## 同版本第一次更新", appended)
+        self.assertIn("- Linux 版 HTTP/HTTPS 不再使用多路径 TCP。", appended)
+        self.assertNotIn("旧的同版本条目不应再抄进来", appended)
+        self.assertIn("keep me", appended)
+        again = plus_follow.append_same_version_notes(appended, lite_notes)
+        self.assertEqual(again, appended)
+        second = plus_follow.append_same_version_notes(
+            appended,
+            "## 同版本第四次更新\n\n- 又一次监听修复。\n",
+        )
+        self.assertIn("## 同版本第二次更新", second)
+        self.assertIn("- 又一次监听修复。", second)
         value = plus_follow.new_plus_hash()
         self.assertEqual(len(value), 7)
         self.assertNotIn("q", value)
