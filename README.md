@@ -9,12 +9,22 @@ Lite 是一款轻量、自托管的服务器监控与运维管理工具。服务
 
 本项目基于 [komari-monitor/komari](https://github.com/komari-monitor/komari) 持续开发，重点改善低配置主控上的数据库占用、历史查询和维护负载，同时提供流量管理、成本中心、备份迁移、接入安全与适配电脑和手机的管理界面。
 
-**当前正式版：Lite-Plus [`0.1.3`](https://github.com/nuomiiiii/Lite-Plus/releases/tag/0.1.3) · 配套 Agent [`0.0.2.3`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.0.2.3) · 默认主题 [`1.2.9`](https://github.com/nuomiiiii/Lite-theme/releases/tag/v1.2.9)**
+**当前正式版：Lite-Plus [`0.1.4`](https://github.com/nuomiiiii/Lite-Plus/releases/tag/0.1.4) · 配套 Agent [`0.0.2.8`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.0.2.8) · 默认主题 [`1.2.9`](https://github.com/nuomiiiii/Lite-theme/releases/tag/v1.2.9)**
 
 [使用手册](https://nuomiiiii.github.io/Lite-document/) · [快速开始](#快速开始) · [功能概览](#功能概览) · [升级说明](#从旧版本升级) · [Agent](#agent-与远程管理) · [MCP 代理](#mcp-代理与-ai-授权) · [完整更新日志](https://github.com/nuomiiiii/Lite-Plus/releases)
 
 > [!WARNING]
 > Lite 只能部署在你拥有或已获得授权管理的设备上。请勿将其用于未经授权的访问、持久化、命令执行或其他滥用行为。管理员应启用 HTTPS 与双因素认证，并妥善保护 Agent Token 和备份文件。
+
+## 0.1.4
+
+> [!IMPORTANT]
+> 建议尽快更新本次主控，并升级配套 Agent 到 `0.0.2.8`。旧版本在只有 IPv4 或只有 IPv6 的机器上，防火墙可能把另一边也锁死。
+
+- 防火墙按节点实际上报的地址显示规则页：只有 IPv4 或只有 IPv6 时，不再出现另一边；还没上报地址时提示等待，不显示空表。
+- 节点入站的地址栈只保留这台机器已有的选项。没有 IPv4 就不能再选 IPv4 或双栈，没有 IPv6 同理；保存时也会拦住。
+- 节点地址变化后会同步到后台。后出现的 IPv4 / IPv6 会跟上同一套默认拒绝和禁 ping。需搭配 Lite-Plus-agent `0.0.2.8`。
+- 手机上看防火墙节点信息时，IPv4 和 IPv6 分行显示；电脑仍是一行。
 
 ## 0.1.3
 

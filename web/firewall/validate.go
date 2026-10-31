@@ -14,22 +14,24 @@ import (
 )
 
 const (
-	MaxRules     = 200
-	MaxComment   = 120
-	DefaultPrio  = 100
-	MinPriority  = 1
-	MaxPriority  = 9999
+	MaxRules      = 200
+	MaxComment    = 120
+	DefaultPrio   = 100
+	MinPriority   = 1
+	MaxPriority   = 9999
 	ExportVersion = 1
 )
 
 var (
-	ErrTooManyRules        = errors.New("firewall rule limit exceeded")
-	ErrInvalidRule         = errors.New("invalid firewall rule")
-	ErrDuplicateRule       = errors.New("firewall rule already exists")
-	ErrInvalidStack        = errors.New("firewall stack must be v4 or v6")
-	ErrStackSource         = errors.New("source CIDR does not match the rule stack")
-	ErrDefaultDenyConflict = errors.New("default deny conflicts with ufw or firewalld")
-	ErrDefaultDenyNeedScan = errors.New("请先扫描主机规则后再打开入站默认拒绝")
+	ErrTooManyRules          = errors.New("firewall rule limit exceeded")
+	ErrInvalidRule           = errors.New("invalid firewall rule")
+	ErrDuplicateRule         = errors.New("firewall rule already exists")
+	ErrInvalidStack          = errors.New("firewall stack must be v4 or v6")
+	ErrStackSource           = errors.New("source CIDR does not match the rule stack")
+	ErrDefaultDenyConflict   = errors.New("default deny conflicts with ufw or firewalld")
+	ErrDefaultDenyNeedScan   = errors.New("请先扫描主机规则后再打开入站默认拒绝")
+	ErrInboundStackMissingV4 = errors.New("host has no IPv4")
+	ErrInboundStackMissingV6 = errors.New("host has no IPv6")
 )
 
 func NormalizeIntent(intent v2.FirewallIntent) (v2.FirewallIntent, error) {
@@ -70,6 +72,7 @@ func NormalizeIntent(intent v2.FirewallIntent) (v2.FirewallIntent, error) {
 	intent.OmitKeep = NormalizeOmitKeep(intent.OmitKeep)
 	sortIntentRules(rules)
 	intent.Rules = rules
+	v2.UnifyPairedPolicy(&intent)
 	return intent, nil
 }
 
@@ -250,6 +253,42 @@ func StacksForInbound(stack string) []string {
 	}
 }
 
+func usableReportedIP(raw string) net.IP {
+	ip := net.ParseIP(strings.TrimSpace(raw))
+	if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return nil
+	}
+	return ip
+}
+
+func ReportedStacks(ipv4, ipv6 string) (v4, v6 bool) {
+	for _, raw := range []string{ipv4, ipv6} {
+		ip := usableReportedIP(raw)
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			v4 = true
+			continue
+		}
+		v6 = true
+	}
+	return v4, v6
+}
+
+func CheckInboundHostStack(inboundStack, ipv4, ipv6 string) error {
+	have4, have6 := ReportedStacks(ipv4, ipv6)
+	for _, stack := range StacksForInbound(inboundStack) {
+		if stack == v2.FirewallStackV4 && !have4 {
+			return ErrInboundStackMissingV4
+		}
+		if stack == v2.FirewallStackV6 && !have6 {
+			return ErrInboundStackMissingV6
+		}
+	}
+	return nil
+}
+
 func ProtocolForInbound(protocol, transport string) string {
 	p := strings.ToLower(strings.TrimSpace(protocol))
 	t := strings.ToLower(strings.TrimSpace(transport))
@@ -409,29 +448,39 @@ func isSSHKeep(rule v2.FirewallRule) bool {
 
 func RewriteKeepSSH(keep []v2.FirewallRule, sshPort string, stackV4, stackV6 bool) []v2.FirewallRule {
 	sshPort = strings.TrimSpace(sshPort)
-	if sshPort == "" {
-		return keep
+	allow := map[string]bool{
+		v2.FirewallStackV4: stackV4,
+		v2.FirewallStackV6: stackV6,
+	}
+	if !stackV4 && !stackV6 {
+		allow[v2.FirewallStackV4] = true
+		allow[v2.FirewallStackV6] = true
 	}
 	out := make([]v2.FirewallRule, 0, len(keep)+2)
 	stacks := map[string]bool{}
 	for _, rule := range keep {
+		if !allow[rule.Stack] {
+			continue
+		}
 		if isSSHKeep(rule) {
 			stacks[rule.Stack] = true
+			if sshPort == "" {
+				out = append(out, rule)
+			}
 			continue
 		}
 		out = append(out, rule)
 	}
-	if len(stacks) == 0 {
-		if stackV4 {
-			stacks[v2.FirewallStackV4] = true
-		}
-		if stackV6 {
-			stacks[v2.FirewallStackV6] = true
-		}
+	if sshPort == "" {
+		return out
 	}
 	if len(stacks) == 0 {
-		stacks[v2.FirewallStackV4] = true
-		stacks[v2.FirewallStackV6] = true
+		if allow[v2.FirewallStackV4] {
+			stacks[v2.FirewallStackV4] = true
+		}
+		if allow[v2.FirewallStackV6] {
+			stacks[v2.FirewallStackV6] = true
+		}
 	}
 	for _, stack := range []string{v2.FirewallStackV4, v2.FirewallStackV6} {
 		if !stacks[stack] {

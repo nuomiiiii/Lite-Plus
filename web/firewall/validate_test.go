@@ -1,6 +1,7 @@
 package firewall
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -83,6 +84,47 @@ func TestStacksForInbound(t *testing.T) {
 	}
 	if got := StacksForInbound("ipv4"); len(got) != 1 || got[0] != "v4" {
 		t.Fatalf("%v", got)
+	}
+}
+
+func TestCheckInboundHostStack(t *testing.T) {
+	if !errors.Is(CheckInboundHostStack("ipv6", "", ""), ErrInboundStackMissingV6) {
+		t.Fatal("a host with no reported IPv6 must not save ipv6 inbound")
+	}
+	if err := CheckInboundHostStack("dual", "", ""); !errors.Is(err, ErrInboundStackMissingV4) && !errors.Is(err, ErrInboundStackMissingV6) {
+		t.Fatal("a host with no reported addresses must not save dual inbound")
+	}
+	if !errors.Is(CheckInboundHostStack("ipv4", "", ""), ErrInboundStackMissingV4) {
+		t.Fatal("a host with no reported IPv4 must not save ipv4 inbound")
+	}
+	if err := CheckInboundHostStack("ipv4", "203.0.113.9", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(CheckInboundHostStack("ipv6", "203.0.113.9", ""), ErrInboundStackMissingV6) {
+		t.Fatal("v4-only host must reject ipv6 inbound")
+	}
+	if !errors.Is(CheckInboundHostStack("dual", "203.0.113.9", ""), ErrInboundStackMissingV6) {
+		t.Fatal("v4-only host must reject dual inbound")
+	}
+	if !errors.Is(CheckInboundHostStack("ipv4", "", "2001:db8::9"), ErrInboundStackMissingV4) {
+		t.Fatal("v6-only host must reject ipv4 inbound")
+	}
+	if err := CheckInboundHostStack("dual", "203.0.113.9", "2001:db8::9"); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(CheckInboundHostStack("ipv6", "203.0.113.9", "::1"), ErrInboundStackMissingV6) {
+		t.Fatal("loopback must not count as a reported IPv6")
+	}
+}
+
+func TestReportedStacksSkipLoopbackAndLinkLocal(t *testing.T) {
+	v4, v6 := ReportedStacks("127.0.0.1", "fe80::1")
+	if v4 || v6 {
+		t.Fatal("loopback and link-local must not count as reported stacks")
+	}
+	v4, v6 = ReportedStacks("203.0.113.9", "2001:db8::9")
+	if !v4 || !v6 {
+		t.Fatalf("global unicast must count, got v4=%v v6=%v", v4, v6)
 	}
 }
 
@@ -216,6 +258,15 @@ func TestRewriteKeepSSH(t *testing.T) {
 	if len(fresh) != 1 || fresh[0].Port != "2222" || fresh[0].Stack != "v4" {
 		t.Fatalf("missing keep must synthesize ssh: %+v", fresh)
 	}
+	v4Only := RewriteKeepSSH(keep, "2222", true, false)
+	if len(v4Only) != 2 {
+		t.Fatalf("v4-only must drop keep-v6: %+v", v4Only)
+	}
+	for _, rule := range v4Only {
+		if rule.Stack == "v6" {
+			t.Fatalf("v4-only must not keep v6: %+v", rule)
+		}
+	}
 }
 
 func TestNormalizeIntentRejectsDuplicateIdentity(t *testing.T) {
@@ -266,6 +317,16 @@ func TestNormalizeIntentSortsByPriority(t *testing.T) {
 	}
 }
 
+func TestNormalizeIntentUnifiesPairedPolicy(t *testing.T) {
+	got, err := NormalizeIntent(v2.FirewallIntent{DefaultDeny4: true, BlockPing6: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.DefaultDeny4 || !got.DefaultDeny6 || !got.BlockPing4 || !got.BlockPing6 {
+		t.Fatalf("save must persist the ping/deny switch onto both stacks: %+v", got)
+	}
+}
+
 func TestNormalizeIntentKeepsDeclaredStack(t *testing.T) {
 	got, err := NormalizeIntent(v2.FirewallIntent{
 		Rules: []v2.FirewallRule{
@@ -292,7 +353,8 @@ func TestNormalizeIntentExpandsBothProtocol(t *testing.T) {
 	if len(got.Rules) != 2 {
 		t.Fatalf("%+v", got.Rules)
 	}
-	if got.Rules[0].Protocol != v2.FirewallProtoTCP || got.Rules[1].Protocol != v2.FirewallProtoUDP {
+	gotProto := map[string]bool{got.Rules[0].Protocol: true, got.Rules[1].Protocol: true}
+	if !gotProto[v2.FirewallProtoTCP] || !gotProto[v2.FirewallProtoUDP] {
 		t.Fatalf("%+v", got.Rules)
 	}
 	if got.Rules[0].Port != "53" || got.Rules[1].Port != "53" {

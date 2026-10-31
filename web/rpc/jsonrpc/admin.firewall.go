@@ -175,11 +175,11 @@ func adminAdoptFirewall(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		return nil, rpcErr
 	}
 	var params struct {
-		UUID           string   `json:"uuid"`
-		Keys           []string `json:"keys"`
-		DisableOriginal bool    `json:"disable_original"`
-		Grant          string   `json:"grant"`
-		PageID         string   `json:"page_id"`
+		UUID            string   `json:"uuid"`
+		Keys            []string `json:"keys"`
+		DisableOriginal bool     `json:"disable_original"`
+		Grant           string   `json:"grant"`
+		PageID          string   `json:"page_id"`
 	}
 	if err := req.BindParams(&params); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
@@ -405,12 +405,9 @@ func firewallView(client models.Client, row *models.ClientFirewallIntent, snap *
 	blocked := snap != nil && (snap.DefaultDenyBlocked || firewall.DefaultDenyConflict(snap.Backend, snap.OuterManagers))
 	intent := firewall.ApplyDefaultDenyView(fwstore.IntentFromRow(row), row != nil && row.Revision > 0, blocked)
 	keep := []v2.FirewallRule{}
-	stackV4, stackV6 := true, true
+	stackV4, stackV6 := firewall.ReportedStacks(client.IPv4, client.IPv6)
 	if snap != nil {
 		keep = append(keep, snap.KeepRules...)
-		if snap.HasStacks {
-			stackV4, stackV6 = snap.StackV4, snap.StackV6
-		}
 	}
 	status := ""
 	errText := ""
@@ -452,6 +449,9 @@ func firewallView(client models.Client, row *models.ClientFirewallIntent, snap *
 		_ = json.Unmarshal(raw, &cloned)
 		cloned.KeepRules = keep
 		cloned.HostRules = firewall.DropOwnedHostNoise(cloned.HostRules)
+		cloned.HasStacks = true
+		cloned.StackV4 = stackV4
+		cloned.StackV6 = stackV6
 		if sshPort != "" {
 			cloned.SshPort = sshPort
 		}

@@ -25,6 +25,12 @@ func TestInboundFirewallMutationsConsumeExecGrant(t *testing.T) {
 	if !strings.Contains(upsert, "GetClientByUUID(") {
 		t.Fatal("inbound upsert must skip the exec grant after the node is gone")
 	}
+	check := strings.Index(upsert, "firewall.CheckInboundHostStack(")
+	grant := strings.Index(upsert, "consumeScheduledExecGrant(")
+	save := strings.Index(upsert, "UpsertInbound(")
+	if check < 0 || grant < 0 || save < 0 || check > grant || check > save {
+		t.Fatal("inbound upsert must reject a missing host stack before consuming a grant or saving")
+	}
 	del := extractGoFunc(text, "func nodemgtInboundDelete")
 	if !strings.Contains(del, "consumeScheduledExecGrant(") {
 		t.Fatal("deleting a linked inbound does not consume an exec grant")
@@ -61,6 +67,13 @@ func TestSaveFirewallValidatesBeforeGrant(t *testing.T) {
 	get := extractGoFunc(string(src), "func adminGetFirewall")
 	if !strings.Contains(get, "reconcileOrphanInbound(") {
 		t.Fatal("get must drop leftover inbound-origin rules after the inbound was deleted")
+	}
+	view := extractGoFunc(string(src), "func firewallView")
+	if !strings.Contains(view, "firewall.ReportedStacks(client.IPv4, client.IPv6)") {
+		t.Fatal("firewall view stacks must come from the reported node addresses")
+	}
+	if !strings.Contains(view, "cloned.StackV4 = stackV4") || !strings.Contains(view, "cloned.StackV6 = stackV6") {
+		t.Fatal("stored snapshots must not keep agent-scanned stacks over the reported addresses")
 	}
 	adopt := extractGoFunc(string(src), "func adminAdoptFirewall")
 	ensure = strings.Index(adopt, "firewall.EnsureApplyAllowed(")

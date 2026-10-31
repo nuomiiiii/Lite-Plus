@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,7 @@ type pendingWaiter struct {
 }
 
 var (
-	waitMu sync.Mutex
+	waitMu  sync.Mutex
 	waiters = map[string]*pendingWaiter{}
 )
 
@@ -280,7 +281,17 @@ func pushRow(row models.ClientFirewallIntent, force bool) {
 			_ = fwstore.DisableDefaultDeny(row.Client)
 			intent.DefaultDeny4 = false
 			intent.DefaultDeny6 = false
+		} else {
+			if err := fwstore.HealPairedPolicy(&row); err != nil {
+				log.Printf("firewall heal paired policy %s: %v", row.Client, err)
+			}
+			intent = fwstore.IntentFromRow(&row)
 		}
+	} else {
+		if err := fwstore.HealPairedPolicy(&row); err != nil {
+			log.Printf("firewall heal paired policy %s: %v", row.Client, err)
+		}
+		intent = fwstore.IntentFromRow(&row)
 	}
 	dispatchApply(row.Client, intent, ListenHoles(row.Client, intent), false)
 }
@@ -292,11 +303,17 @@ func applyInFlight(row models.ClientFirewallIntent) bool {
 	return time.Since(*row.DeliveryUpdatedAt) < applyWait+applyRetrySkew
 }
 
+func defaultDenyEnabling(prev, intent v2.FirewallIntent) bool {
+	prevOn := prev.DefaultDeny4 || prev.DefaultDeny6
+	nextOn := intent.DefaultDeny4 || intent.DefaultDeny6
+	return !prevOn && nextOn
+}
+
 func GuardDefaultDeny(uuid string, prev, intent v2.FirewallIntent) error {
 	if !intent.DefaultDeny4 && !intent.DefaultDeny6 {
 		return nil
 	}
-	enabling := (!prev.DefaultDeny4 && intent.DefaultDeny4) || (!prev.DefaultDeny6 && intent.DefaultDeny6)
+	enabling := defaultDenyEnabling(prev, intent)
 	row, _ := fwstore.Get(uuid)
 	snap := fwstore.SnapshotFromRow(row)
 	if enabling || snap == nil {
@@ -329,10 +346,10 @@ func defaultDenyRejected(result v2.FirewallResultParams) bool {
 }
 
 var (
-	ErrSiteRemoteOff        = errors.New("站点未启用远程管理")
-	ErrAgentTooOld          = errors.New("Agent 版本过旧，请升级")
-	ErrAgentRemoteOff       = errors.New("节点未启用远程控制")
-	ErrFirewallUnsupported  = errors.New("当前 Agent 不支持防火墙，请升级")
+	ErrSiteRemoteOff       = errors.New("站点未启用远程管理")
+	ErrAgentTooOld         = errors.New("Agent 版本过旧，请升级")
+	ErrAgentRemoteOff      = errors.New("节点未启用远程控制")
+	ErrFirewallUnsupported = errors.New("当前 Agent 不支持防火墙，请升级")
 )
 
 func EnsureApplyAllowed(uuid string) error {

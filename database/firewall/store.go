@@ -54,6 +54,7 @@ func SaveIntent(clientUUID string, intent v2.FirewallIntent) (*models.ClientFire
 			CreatedAt: now,
 		}
 	}
+	v2.UnifyPairedPolicy(&intent)
 	row.Revision++
 	row.BlockPing4 = intent.BlockPing4
 	row.BlockPing6 = intent.BlockPing6
@@ -83,7 +84,7 @@ func IntentFromRow(row *models.ClientFirewallIntent) v2.FirewallIntent {
 	if rules == nil {
 		rules = []v2.FirewallRule{}
 	}
-	return v2.FirewallIntent{
+	intent := v2.FirewallIntent{
 		Revision:     row.Revision,
 		BlockPing4:   row.BlockPing4,
 		BlockPing6:   row.BlockPing6,
@@ -93,6 +94,34 @@ func IntentFromRow(row *models.ClientFirewallIntent) v2.FirewallIntent {
 		OmitKeep:     splitOmitKeep(row.OmitKeep),
 		Rules:        rules,
 	}
+	v2.UnifyPairedPolicy(&intent)
+	return intent
+}
+
+func HealPairedPolicy(row *models.ClientFirewallIntent) error {
+	if row == nil {
+		return nil
+	}
+	intent := IntentFromRow(row)
+	if row.BlockPing4 == intent.BlockPing4 && row.BlockPing6 == intent.BlockPing6 && row.DefaultDeny4 == intent.DefaultDeny4 && row.DefaultDeny6 == intent.DefaultDeny6 {
+		return nil
+	}
+	now := time.Now().UTC()
+	if err := dbcore.GetDBInstance().Model(row).Updates(map[string]any{
+		"block_ping_v4":   intent.BlockPing4,
+		"block_ping_v6":   intent.BlockPing6,
+		"default_deny_v4": intent.DefaultDeny4,
+		"default_deny_v6": intent.DefaultDeny6,
+		"updated_at":      now,
+	}).Error; err != nil {
+		return err
+	}
+	row.BlockPing4 = intent.BlockPing4
+	row.BlockPing6 = intent.BlockPing6
+	row.DefaultDeny4 = intent.DefaultDeny4
+	row.DefaultDeny6 = intent.DefaultDeny6
+	row.UpdatedAt = now
+	return nil
 }
 
 func splitOmitKeep(raw string) []string {

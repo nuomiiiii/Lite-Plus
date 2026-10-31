@@ -510,6 +510,13 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	}
 	wasLinked := existing != nil && firewall.InboundLinked(existing.NodeUUID, existing.ID)
 	op := firewall.PlannedInboundFirewallOp(wasLinked, p.FirewallAllow, existing, row, cfg)
+	if strings.TrimSpace(row.NodeUUID) != "" {
+		if host, hostErr := clients.GetClientByUUID(row.NodeUUID); hostErr == nil {
+			if err := firewall.CheckInboundHostStack(p.Stack, host.IPv4, host.IPv6); err != nil {
+				return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+			}
+		}
+	}
 	var expires time.Time
 	var grantEpoch uint64
 	var grantMeta *rpc.ContextMeta

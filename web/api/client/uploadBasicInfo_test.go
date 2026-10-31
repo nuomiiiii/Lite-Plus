@@ -142,3 +142,61 @@ func TestV2BasicInfoSynchronizesCurrentAgentRuntimeConfig(t *testing.T) {
 		t.Fatalf("unexpected synchronized profile: %+v", profile)
 	}
 }
+
+func TestV2BasicInfoUpdatesReportedAddresses(t *testing.T) {
+	flags.DatabaseType = "sqlite"
+	flags.DatabaseFile = "file:v2_basic_info_addresses?mode=memory&cache=shared"
+	db := dbcore.GetDBInstance()
+
+	clientUUID := "client-v2-addresses"
+	if err := db.Create(&models.Client{
+		UUID:  clientUUID,
+		Token: "token-v2-addresses",
+		IPv4:  "203.0.113.9",
+	}).Error; err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	resp := handleV2RPC(clientUUID, v2.Request{
+		JSONRPC: v2.Version,
+		Method:  v2.MethodAgentBasicInfo,
+		Params: map[string]interface{}{
+			"info": map[string]interface{}{
+				"ipv4": "203.0.113.9",
+				"ipv6": "2001:db8::9",
+			},
+		},
+		ID: "basic-info-v6-appeared",
+	}, false)
+	if resp.Error != nil {
+		t.Fatalf("v2 basic info failed: %+v", resp.Error)
+	}
+	var got models.Client
+	if err := db.First(&got, "uuid = ?", clientUUID).Error; err != nil {
+		t.Fatalf("load client: %v", err)
+	}
+	if got.IPv4 != "203.0.113.9" || got.IPv6 != "2001:db8::9" {
+		t.Fatalf("expected v6 to appear on later report, got ipv4=%q ipv6=%q", got.IPv4, got.IPv6)
+	}
+
+	resp = handleV2RPC(clientUUID, v2.Request{
+		JSONRPC: v2.Version,
+		Method:  v2.MethodAgentBasicInfo,
+		Params: map[string]interface{}{
+			"info": map[string]interface{}{
+				"ipv4": "198.51.100.9",
+				"ipv6": "",
+			},
+		},
+		ID: "basic-info-v6-left",
+	}, false)
+	if resp.Error != nil {
+		t.Fatalf("v2 basic info failed: %+v", resp.Error)
+	}
+	if err := db.First(&got, "uuid = ?", clientUUID).Error; err != nil {
+		t.Fatalf("reload client: %v", err)
+	}
+	if got.IPv4 != "198.51.100.9" || got.IPv6 != "" {
+		t.Fatalf("expected address change to persist, got ipv4=%q ipv6=%q", got.IPv4, got.IPv6)
+	}
+}

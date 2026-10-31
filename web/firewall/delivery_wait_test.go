@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/nuomiiiii/lite/database/models"
+	v2 "github.com/nuomiiiii/lite/protocol/v2"
 )
 
 func TestDispatchRegistersWaiterBeforeSend(t *testing.T) {
@@ -61,9 +62,21 @@ func TestDispatchRegistersWaiterBeforeSend(t *testing.T) {
 	if !strings.Contains(push, "if !force && applyInFlight(row)") {
 		t.Fatal("reconnect apply must not wait out a lost in-flight send")
 	}
+	if !strings.Contains(push, "HealPairedPolicy(") || !strings.Contains(push, "log.Printf(") {
+		t.Fatal("reconnect must persist the ping/deny switch onto both stacks and log a failed heal")
+	}
 	inflight := extractFunc(text, "func applyInFlight")
 	if !strings.Contains(inflight, "DeliverySent") || !strings.Contains(inflight, "applyWait") || !strings.Contains(inflight, "applyRetrySkew") {
 		t.Fatal("in-flight apply must cover the sent window plus retry skew")
+	}
+}
+
+func TestDefaultDenyEnablingUsesOneSwitch(t *testing.T) {
+	if defaultDenyEnabling(v2.FirewallIntent{DefaultDeny4: true}, v2.FirewallIntent{DefaultDeny4: true, DefaultDeny6: true}) {
+		t.Fatal("already-on switch must not count as enabling")
+	}
+	if !defaultDenyEnabling(v2.FirewallIntent{}, v2.FirewallIntent{DefaultDeny6: true}) {
+		t.Fatal("off to on must count as enabling")
 	}
 }
 
