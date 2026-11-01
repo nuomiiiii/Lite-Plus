@@ -68,6 +68,13 @@ func TestSaveFirewallValidatesBeforeGrant(t *testing.T) {
 	if !strings.Contains(get, "reconcileOrphanInbound(") {
 		t.Fatal("get must drop leftover inbound-origin rules after the inbound was deleted")
 	}
+	reconcile := extractGoFunc(string(src), "func reconcileOrphanInbound")
+	if strings.Contains(reconcile, "DispatchApply(") {
+		t.Fatal("get must not apply cleaned inbound rules without an exec grant")
+	}
+	if !strings.Contains(reconcile, "SaveIntent(") {
+		t.Fatal("get must persist cleaned inbound-origin rules locally")
+	}
 	view := extractGoFunc(string(src), "func firewallView")
 	if !strings.Contains(view, "firewall.ReportedStacks(client.IPv4, client.IPv6)") {
 		t.Fatal("firewall view stacks must come from the reported node addresses")

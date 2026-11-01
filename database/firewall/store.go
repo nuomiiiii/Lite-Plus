@@ -98,13 +98,13 @@ func IntentFromRow(row *models.ClientFirewallIntent) v2.FirewallIntent {
 	return intent
 }
 
-func HealPairedPolicy(row *models.ClientFirewallIntent) error {
+func HealPairedPolicy(row *models.ClientFirewallIntent) (bool, error) {
 	if row == nil {
-		return nil
+		return false, nil
 	}
 	intent := IntentFromRow(row)
 	if row.BlockPing4 == intent.BlockPing4 && row.BlockPing6 == intent.BlockPing6 && row.DefaultDeny4 == intent.DefaultDeny4 && row.DefaultDeny6 == intent.DefaultDeny6 {
-		return nil
+		return false, nil
 	}
 	now := time.Now().UTC()
 	if err := dbcore.GetDBInstance().Model(row).Updates(map[string]any{
@@ -114,14 +114,14 @@ func HealPairedPolicy(row *models.ClientFirewallIntent) error {
 		"default_deny_v6": intent.DefaultDeny6,
 		"updated_at":      now,
 	}).Error; err != nil {
-		return err
+		return false, err
 	}
 	row.BlockPing4 = intent.BlockPing4
 	row.BlockPing6 = intent.BlockPing6
 	row.DefaultDeny4 = intent.DefaultDeny4
 	row.DefaultDeny6 = intent.DefaultDeny6
 	row.UpdatedAt = now
-	return nil
+	return true, nil
 }
 
 func splitOmitKeep(raw string) []string {

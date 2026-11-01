@@ -259,7 +259,25 @@ func pushRow(row models.ClientFirewallIntent, force bool) {
 	if row.Revision == 0 {
 		return
 	}
-	if !force && row.AppliedRevision >= row.Revision {
+	intent := fwstore.IntentFromRow(&row)
+	policyChanged := false
+	if intent.DefaultDeny4 || intent.DefaultDeny6 {
+		if snap := fwstore.SnapshotFromRow(&row); snap != nil && defaultDenyRejected(*snap) {
+			_ = fwstore.DisableDefaultDeny(row.Client)
+			row.DefaultDeny4 = false
+			row.DefaultDeny6 = false
+			intent.DefaultDeny4 = false
+			intent.DefaultDeny6 = false
+			policyChanged = true
+		}
+	}
+	if changed, err := fwstore.HealPairedPolicy(&row); err != nil {
+		log.Printf("firewall heal paired policy %s: %v", row.Client, err)
+	} else if changed {
+		policyChanged = true
+		intent = fwstore.IntentFromRow(&row)
+	}
+	if !force && !policyChanged && row.AppliedRevision >= row.Revision {
 		return
 	}
 	if !force && applyInFlight(row) {
@@ -274,24 +292,6 @@ func pushRow(row models.ClientFirewallIntent, force bool) {
 	}
 	if !client.Firewall || client.FirewallVersion < v2.FirewallVersion {
 		return
-	}
-	intent := fwstore.IntentFromRow(&row)
-	if intent.DefaultDeny4 || intent.DefaultDeny6 {
-		if snap := fwstore.SnapshotFromRow(&row); snap != nil && defaultDenyRejected(*snap) {
-			_ = fwstore.DisableDefaultDeny(row.Client)
-			intent.DefaultDeny4 = false
-			intent.DefaultDeny6 = false
-		} else {
-			if err := fwstore.HealPairedPolicy(&row); err != nil {
-				log.Printf("firewall heal paired policy %s: %v", row.Client, err)
-			}
-			intent = fwstore.IntentFromRow(&row)
-		}
-	} else {
-		if err := fwstore.HealPairedPolicy(&row); err != nil {
-			log.Printf("firewall heal paired policy %s: %v", row.Client, err)
-		}
-		intent = fwstore.IntentFromRow(&row)
 	}
 	dispatchApply(row.Client, intent, ListenHoles(row.Client, intent), false)
 }

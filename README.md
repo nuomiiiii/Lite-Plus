@@ -9,12 +9,25 @@ Lite 是一款轻量、自托管的服务器监控与运维管理工具。服务
 
 本项目基于 [komari-monitor/komari](https://github.com/komari-monitor/komari) 持续开发，重点改善低配置主控上的数据库占用、历史查询和维护负载，同时提供流量管理、成本中心、备份迁移、接入安全与适配电脑和手机的管理界面。
 
-**当前正式版：Lite-Plus [`0.1.4`](https://github.com/nuomiiiii/Lite-Plus/releases/tag/0.1.4) · 配套 Agent [`0.0.2.8`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.0.2.8) · 默认主题 [`1.2.9`](https://github.com/nuomiiiii/Lite-theme/releases/tag/v1.2.9)**
+**当前正式版：Lite-Plus [`0.1.5`](https://github.com/nuomiiiii/Lite-Plus/releases/tag/0.1.5) · 配套 Agent [`0.0.3.1`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.0.3.1) · 默认主题 [`1.2.9`](https://github.com/nuomiiiii/Lite-theme/releases/tag/v1.2.9)**
 
 [使用手册](https://nuomiiiii.github.io/Lite-document/) · [快速开始](#快速开始) · [功能概览](#功能概览) · [升级说明](#从旧版本升级) · [Agent](#agent-与远程管理) · [MCP 代理](#mcp-代理与-ai-授权) · [完整更新日志](https://github.com/nuomiiiii/Lite-Plus/releases)
 
 > [!WARNING]
 > Lite 只能部署在你拥有或已获得授权管理的设备上。请勿将其用于未经授权的访问、持久化、命令执行或其他滥用行为。管理员应启用 HTTPS 与双因素认证，并妥善保护 Agent Token 和备份文件。
+
+## 0.1.5
+
+> [!IMPORTANT]
+> 建议尽快更新本次主控。Hysteria2 / TUIC 出站需搭配 Lite-Plus-agent `0.0.3.1`。从 Lite 升级过来、从没单独改过 HTTPS 端口时，会继续用原来的端口。
+
+- 入站、出站可选 Hysteria2、TUIC。选 Xray 时不显示 Hysteria2、TUIC、AnyTLS；改成 sing-box 后才出现。
+- 出站可粘贴 `hysteria2://`、`hy2://`、`tuic://` 导入。订阅链接同样带上这两项。
+- 保存入站时如果没改公开端口，会保留原来的值。
+- 从 Lite 升级且从未保存过 HTTPS 监听时，继续用原来的 HTTPS 端口，不会改成 Plus 新安装默认端口。
+- 自更新只认 `lite-update.json` 和 `Lite-$GOOS-$GOARCH`。
+- 改用户名失败时会显示服务器返回的原因。
+- 防火墙节点在线状态按 Agent 实际上线显示。节点离线时，下发不再标成已发送。
 
 ## 0.1.4
 

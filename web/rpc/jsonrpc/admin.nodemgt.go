@@ -223,7 +223,7 @@ type inboundUpsertParams struct {
 	Enabled            *bool  `json:"enabled"`
 	Stack              string `json:"stack"`
 	PublicHost         string `json:"public_host"`
-	PublicPort         int    `json:"public_port"`
+	PublicPort         *int   `json:"public_port"`
 	Flow               string `json:"flow"`
 	Transport          string `json:"transport"`
 	Security           string `json:"security"`
@@ -294,6 +294,16 @@ func resolveInboundSortIndex(id string, requested *int, existing *models.Inbound
 	}
 	if strings.TrimSpace(id) == "" {
 		return next()
+	}
+	return 0
+}
+
+func inboundPublicPort(p inboundUpsertParams, existing *models.Inbound) int {
+	if p.PublicPort != nil {
+		return *p.PublicPort
+	}
+	if existing != nil {
+		return inboundcfg.Parse(existing.SettingsJSON).PublicPort
 	}
 	return 0
 }
@@ -429,7 +439,7 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	cfg := inboundcfg.Settings{
 		Stack:              p.Stack,
 		PublicHost:         publicHost,
-		PublicPort:         p.PublicPort,
+		PublicPort:         inboundPublicPort(p, existing),
 		Flow:               p.Flow,
 		Transport:          p.Transport,
 		Security:           p.Security,
@@ -812,9 +822,13 @@ func nodemgtOutboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 	if p.Protocol == "" {
 		p.Protocol = "freedom"
 	}
-	if strings.EqualFold(p.Protocol, "anytls") {
+	if strings.EqualFold(p.Protocol, "anytls") || strings.EqualFold(p.Protocol, "hysteria2") || strings.EqualFold(p.Protocol, "tuic") {
 		p.Core = models.CoreSingBox
-		p.Transport = "tcp"
+		if strings.EqualFold(p.Protocol, "hysteria2") || strings.EqualFold(p.Protocol, "tuic") {
+			p.Transport = "quic"
+		} else {
+			p.Transport = "tcp"
+		}
 		if strings.TrimSpace(p.Security) == "" || strings.EqualFold(p.Security, "none") {
 			p.Security = "tls"
 		}
@@ -1907,8 +1921,12 @@ func nodemgtDiagStatus(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.Js
 		}
 		commands = append(commands, nodemgtCommandView(cmd))
 	}
+	pendingViews := make([]map[string]any, 0, len(pending))
+	for _, cmd := range pending {
+		pendingViews = append(pendingViews, nodemgtCommandView(cmd))
+	}
 	return map[string]any{
-		"pending_commands": pending,
+		"pending_commands": pendingViews,
 		"commands":         commands,
 		"cores":            []string{models.CoreXray, models.CoreSingBox},
 		"xray_version":     "v26.6.27",

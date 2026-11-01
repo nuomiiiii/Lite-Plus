@@ -313,7 +313,7 @@ func TestConfiguredDatabaseWithinAcceptsLiteDB(t *testing.T) {
 }
 
 func TestManifestSelectsCurrentPlatformAndValidatesChecksum(t *testing.T) {
-	assetName := "komari-" + runtime.GOOS + "-" + runtime.GOARCH
+	assetName := "Lite-" + runtime.GOOS + "-" + runtime.GOARCH
 	manifest := Manifest{
 		Schema:      1,
 		Version:     "2.0.5",
@@ -565,7 +565,7 @@ func TestFetchReleaseManifestRequiresPlusChannel(t *testing.T) {
 	}
 }
 
-func TestFetchReleaseManifestPrefersLiteThenKomari(t *testing.T) {
+func TestFetchReleaseManifestReadsLiteFile(t *testing.T) {
 	previous := releaseBaseURL
 	t.Cleanup(func() { releaseBaseURL = previous })
 
@@ -573,20 +573,13 @@ func TestFetchReleaseManifestPrefersLiteThenKomari(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyBody, err := json.Marshal(Manifest{Schema: 1, Version: "2.2.4", VersionHash: "def5678"})
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch {
-		case strings.HasSuffix(request.URL.Path, "/"+manifestName):
+		if strings.HasSuffix(request.URL.Path, "/"+manifestName) {
 			writer.Write(liteBody)
-		case strings.HasSuffix(request.URL.Path, "/"+legacyManifestName):
-			writer.Write(legacyBody)
-		default:
-			http.NotFound(writer, request)
+			return
 		}
+		http.NotFound(writer, request)
 	}))
 	t.Cleanup(server.Close)
 	releaseBaseURL = server.URL
@@ -596,11 +589,11 @@ func TestFetchReleaseManifestPrefersLiteThenKomari(t *testing.T) {
 		t.Fatalf("fetchReleaseManifest() error = %v", err)
 	}
 	if got.Version != "2.2.5" || got.VersionHash != "abc1234" {
-		t.Fatalf("preferred manifest = %#v", got)
+		t.Fatalf("manifest = %#v", got)
 	}
 }
 
-func TestFetchReleaseManifestFallsBackToKomariFile(t *testing.T) {
+func TestFetchReleaseManifestIgnoresKomariFile(t *testing.T) {
 	previous := releaseBaseURL
 	t.Cleanup(func() { releaseBaseURL = previous })
 
@@ -609,7 +602,7 @@ func TestFetchReleaseManifestFallsBackToKomariFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if strings.HasSuffix(request.URL.Path, "/"+legacyManifestName) {
+		if strings.HasSuffix(request.URL.Path, "/komari-update.json") {
 			writer.Write(legacyBody)
 			return
 		}
@@ -618,12 +611,8 @@ func TestFetchReleaseManifestFallsBackToKomariFile(t *testing.T) {
 	t.Cleanup(server.Close)
 	releaseBaseURL = server.URL
 
-	got, err := fetchReleaseManifest("2.2.3", server.Client())
-	if err != nil {
-		t.Fatalf("fetchReleaseManifest() error = %v", err)
-	}
-	if got.Version != "2.2.3" || got.VersionHash != "oldhash" {
-		t.Fatalf("legacy manifest = %#v", got)
+	if _, err := fetchReleaseManifest("2.2.3", server.Client()); err == nil {
+		t.Fatal("fetchReleaseManifest() used komari-update.json")
 	}
 }
 

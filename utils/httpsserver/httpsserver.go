@@ -764,7 +764,7 @@ func (m *Manager) reloadManual(provider *manualProvider) {
 	}
 	m.refreshStatus(provider, "")
 	if changed {
-		logger.Infof("https", "TLS certificate was reloaded without restarting Lite")
+		logger.Infof("https", "TLS certificate was reloaded without restarting Plus")
 	}
 }
 

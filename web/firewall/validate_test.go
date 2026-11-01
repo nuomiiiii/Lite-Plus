@@ -166,19 +166,19 @@ func TestInboundComment(t *testing.T) {
 }
 
 func TestApplyDefaultDenyView(t *testing.T) {
-	fresh := ApplyDefaultDenyView(v2.FirewallIntent{}, false, false)
+	fresh := ApplyDefaultDenyView(v2.FirewallIntent{}, false)
 	if fresh.DefaultDeny4 || fresh.DefaultDeny6 {
 		t.Fatalf("new intent must keep default deny off: %+v", fresh)
 	}
-	kept := ApplyDefaultDenyView(v2.FirewallIntent{DefaultDeny4: false, DefaultDeny6: false}, true, false)
+	kept := ApplyDefaultDenyView(v2.FirewallIntent{DefaultDeny4: false, DefaultDeny6: false}, false)
 	if kept.DefaultDeny4 || kept.DefaultDeny6 {
 		t.Fatalf("saved intent must keep deny off: %+v", kept)
 	}
-	on := ApplyDefaultDenyView(v2.FirewallIntent{DefaultDeny4: true, DefaultDeny6: true}, true, false)
+	on := ApplyDefaultDenyView(v2.FirewallIntent{DefaultDeny4: true, DefaultDeny6: true}, false)
 	if !on.DefaultDeny4 || !on.DefaultDeny6 {
 		t.Fatalf("saved deny on must stay on: %+v", on)
 	}
-	blocked := ApplyDefaultDenyView(v2.FirewallIntent{DefaultDeny4: true, DefaultDeny6: true}, true, true)
+	blocked := ApplyDefaultDenyView(v2.FirewallIntent{DefaultDeny4: true, DefaultDeny6: true}, true)
 	if blocked.DefaultDeny4 || blocked.DefaultDeny6 {
 		t.Fatalf("blocked hosts must not default deny on: %+v", blocked)
 	}
@@ -517,6 +517,9 @@ func TestInboundLinkWaitsForApplyFailure(t *testing.T) {
 	}
 	if !strings.Contains(text, "DeliveryFailed") {
 		t.Fatal("inbound link must surface a failed apply")
+	}
+	if !strings.Contains(text, "firewall command timed out") {
+		t.Fatal("inbound link must surface an apply timeout")
 	}
 	if !strings.Contains(text, "dropInboundRulesLocal(") || !strings.Contains(text, "clientExists(") {
 		t.Fatal("unlinking an inbound for a deleted server must not wait on the agent")

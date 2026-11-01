@@ -62,12 +62,12 @@ func PushCommand(st *store.Store, cmd models.ControlCommand) {
 	if raw := commandPayloadJSON(cmd); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &payload)
 	}
-	agent_runtime.DispatchV2Event(cmd.NodeUUID, v2.MethodNodemgtControl, map[string]any{
+	queued := agent_runtime.DispatchV2Event(cmd.NodeUUID, v2.MethodNodemgtControl, map[string]any{
 		"operation_id": cmd.OperationID,
 		"kind":         cmd.Kind,
 		"payload":      payload,
 	})
-	if st != nil && agent_runtime.IsAgentOnline(cmd.NodeUUID) {
+	if st != nil && queued && agent_runtime.IsAgentOnline(cmd.NodeUUID) {
 		_ = st.MarkCommandSent(cmd.OperationID)
 	}
 }

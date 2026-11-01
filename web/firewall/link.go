@@ -198,6 +198,12 @@ func waitApply(nodeUUID string, intent v2.FirewallIntent, holes []v2.FirewallHol
 		}
 		return fmt.Errorf("firewall apply failed")
 	}
+	if !got {
+		if row != nil && row.DeliveryStatus == fwstore.DeliveryQueued {
+			return nil
+		}
+		return fmt.Errorf("firewall command timed out")
+	}
 	return nil
 }
 

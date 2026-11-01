@@ -12,6 +12,7 @@ import (
 	"github.com/nuomiiiii/lite/database/models"
 	"github.com/nuomiiiii/lite/pkg/rpc"
 	v2 "github.com/nuomiiiii/lite/protocol/v2"
+	agent_runtime "github.com/nuomiiiii/lite/web/agent"
 	"github.com/nuomiiiii/lite/web/api/remote"
 	"github.com/nuomiiiii/lite/web/firewall"
 )
@@ -378,14 +379,6 @@ func reconcileOrphanInbound(nodeUUID string, row *models.ClientFirewallIntent) *
 	if err != nil {
 		return row
 	}
-	applied := fwstore.IntentFromRow(saved)
-	result, got := firewall.DispatchApply(nodeUUID, applied, firewall.ListenHoles(nodeUUID, applied))
-	if got {
-		_ = firewall.SaveCleanSnapshot(nodeUUID, result)
-		if next, err := fwstore.Get(nodeUUID); err == nil && next != nil {
-			return next
-		}
-	}
 	return saved
 }
 
@@ -403,7 +396,7 @@ func loadFirewallClient(uuid string) (models.Client, *rpc.JsonRpcError) {
 
 func firewallView(client models.Client, row *models.ClientFirewallIntent, snap *v2.FirewallResultParams, live bool) map[string]any {
 	blocked := snap != nil && (snap.DefaultDenyBlocked || firewall.DefaultDenyConflict(snap.Backend, snap.OuterManagers))
-	intent := firewall.ApplyDefaultDenyView(fwstore.IntentFromRow(row), row != nil && row.Revision > 0, blocked)
+	intent := firewall.ApplyDefaultDenyView(fwstore.IntentFromRow(row), blocked)
 	keep := []v2.FirewallRule{}
 	stackV4, stackV6 := firewall.ReportedStacks(client.IPv4, client.IPv6)
 	if snap != nil {
@@ -438,7 +431,7 @@ func firewallView(client models.Client, row *models.ClientFirewallIntent, snap *
 		"live":             live,
 		"supported":        firewall.NodeSupports(client),
 		"unavailable":      firewall.UnavailableReason(client),
-		"online":           false,
+		"online":           agent_runtime.IsAgentOnline(client.UUID),
 	}
 	if snapshotAt != nil {
 		out["snapshot_at"] = snapshotAt.UTC()

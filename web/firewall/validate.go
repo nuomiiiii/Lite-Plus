@@ -14,12 +14,11 @@ import (
 )
 
 const (
-	MaxRules      = 200
-	MaxComment    = 120
-	DefaultPrio   = 100
-	MinPriority   = 1
-	MaxPriority   = 9999
-	ExportVersion = 1
+	MaxRules    = 200
+	MaxComment  = 120
+	DefaultPrio = 100
+	MinPriority = 1
+	MaxPriority = 9999
 )
 
 var (
@@ -421,7 +420,7 @@ func matchStackAddr(addr netip.Addr, stack string) error {
 	return ErrStackSource
 }
 
-func ApplyDefaultDenyView(intent v2.FirewallIntent, _, blocked bool) v2.FirewallIntent {
+func ApplyDefaultDenyView(intent v2.FirewallIntent, blocked bool) v2.FirewallIntent {
 	if blocked {
 		intent.DefaultDeny4 = false
 		intent.DefaultDeny6 = false

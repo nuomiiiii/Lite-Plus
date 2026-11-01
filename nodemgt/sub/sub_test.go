@@ -726,6 +726,49 @@ func TestClashQuotesPasswordValues(t *testing.T) {
 	}
 }
 
+func TestHysteria2AndTUICShareLinksRoundTrip(t *testing.T) {
+	hy2 := Node{
+		Name: "node-hy2", Protocol: "hysteria2", Host: "hy2.example.com", Port: 443,
+		Password: "hy2-secret", Type: "quic", Security: "tls", SNI: "hy2.example.com",
+	}
+	tuic := Node{
+		Name: "node-tuic", Protocol: "tuic", Host: "tuic.example.com", Port: 443,
+		UUID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Password: "tuic-secret",
+		Type: "quic", Security: "tls", SNI: "tuic.example.com",
+	}
+	raw, err := base64.StdEncoding.DecodeString(RenderV2RayBase64([]Node{hy2, tuic}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	if strings.Contains(body, "type=quic") {
+		t.Fatalf("hy2/tuic share must omit type=quic: %s", body)
+	}
+	var hy2Link, tuicLink string
+	for _, line := range strings.Split(body, "\n") {
+		switch {
+		case strings.HasPrefix(line, "hysteria2://"):
+			hy2Link = line
+		case strings.HasPrefix(line, "tuic://"):
+			tuicLink = line
+		}
+	}
+	if hy2Link == "" || !strings.Contains(hy2Link, "hy2-secret@") {
+		t.Fatalf("hy2 link: %s", body)
+	}
+	gotHy2, ok := NodeFromShareLink(hy2Link)
+	if !ok || gotHy2.Protocol != "hysteria2" || gotHy2.Password != "hy2-secret" || gotHy2.Host != "hy2.example.com" {
+		t.Fatalf("parse hy2 %+v ok=%v from %s", gotHy2, ok, hy2Link)
+	}
+	if tuicLink == "" || !strings.Contains(tuicLink, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:tuic-secret@") {
+		t.Fatalf("tuic link: %s", body)
+	}
+	gotTuic, ok := NodeFromShareLink(tuicLink)
+	if !ok || gotTuic.Protocol != "tuic" || gotTuic.UUID != "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" || gotTuic.Password != "tuic-secret" {
+		t.Fatalf("parse tuic %+v ok=%v from %s", gotTuic, ok, tuicLink)
+	}
+}
+
 func TestClashTuicIncludesPassword(t *testing.T) {
 	n, ok := NodeFromShareLink("tuic://aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:simple-secret@external.example:443?security=tls#tuic_control")
 	if !ok {

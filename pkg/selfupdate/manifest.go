@@ -17,10 +17,9 @@ import (
 )
 
 const (
-	manifestName       = "lite-update.json"
-	legacyManifestName = "komari-update.json"
-	maxManifest        = 2 << 20
-	maxBinary          = 256 << 20
+	manifestName = "lite-update.json"
+	maxManifest  = 2 << 20
+	maxBinary    = 256 << 20
 )
 
 // releaseBaseURL is the Plus GitHub release download root. Do not use Lite GitHub releases.
@@ -62,18 +61,11 @@ func fetchReleaseManifest(version string, client *http.Client) (*Manifest, error
 	if !ChannelConfigured() {
 		return nil, errors.New("plus update channel is not configured")
 	}
-	var lastErr error
-	for _, name := range []string{manifestName, legacyManifestName} {
-		manifest, err := fetchManifest(releaseURL(version, name), client)
-		if err == nil {
-			return manifest, nil
-		}
-		lastErr = err
+	manifest, err := fetchManifest(releaseURL(version, manifestName), client)
+	if err != nil {
+		return nil, err
 	}
-	if lastErr == nil {
-		lastErr = errors.New("update manifest not found")
-	}
-	return nil, lastErr
+	return manifest, nil
 }
 
 func fetchManifest(ctxURL string, client *http.Client) (*Manifest, error) {
@@ -130,7 +122,6 @@ func (manifest *Manifest) validate(version, versionHash string) (*ManifestAsset,
 func platformAssetNames() []string {
 	return []string{
 		fmt.Sprintf("Lite-%s-%s", runtime.GOOS, runtime.GOARCH),
-		fmt.Sprintf("komari-%s-%s", runtime.GOOS, runtime.GOARCH),
 	}
 }
 

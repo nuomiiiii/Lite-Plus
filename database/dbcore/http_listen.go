@@ -1,6 +1,7 @@
 package dbcore
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
@@ -34,6 +35,14 @@ func existingLiteDatabase(dataDir string) bool {
 	return fileExists(filepath.Join(dataDir, "lite.db"))
 }
 
+func existingPlusDatabase(dataDir string) bool {
+	raw, err := os.ReadFile(filepath.Join(dataDir, "lite.db"))
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(raw, []byte("nodemgt_inbounds")) || bytes.Contains(raw, []byte("client_firewall_intents"))
+}
+
 // ResolveDefaultHTTPListen returns the HTTP listen address when -l / LITE_LISTEN
 // are unset.
 //
@@ -47,6 +56,9 @@ func ResolveDefaultHTTPListen(dataDir string) string {
 	}
 	if addr, ok := readListenFromLiteEnv(dataDir); ok {
 		return addr
+	}
+	if existingPlusDatabase(dataDir) {
+		return defaultPlusHTTPListen
 	}
 	if existingLiteDatabase(dataDir) {
 		// Lite was started without a persisted listen record. Keep the listen

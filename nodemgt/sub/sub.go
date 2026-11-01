@@ -708,16 +708,24 @@ func RenderV2RayBase64(nodes []Node, extra []string) string {
 			continue
 		}
 		id := n.UUID
-		if scheme == "trojan" || scheme == "anytls" {
+		pass := ""
+		switch scheme {
+		case "trojan", "anytls", "hysteria2":
 			id = n.Password
 			if id == "" {
 				id = n.UUID
 			}
+		case "tuic":
+			pass = n.Password
+		}
+		user := url.User(id)
+		if scheme == "tuic" && pass != "" {
+			user = url.UserPassword(id, pass)
 		}
 		u := url.URL{
 			Scheme: scheme,
 			Host:   shareHostPort(n.Host, n.Port),
-			User:   url.User(id),
+			User:   user,
 		}
 		q := u.Query()
 		if scheme == "vless" {
@@ -726,7 +734,7 @@ func RenderV2RayBase64(nodes []Node, extra []string) string {
 		if n.Security != "" {
 			q.Set("security", n.Security)
 		}
-		if scheme != "anytls" && n.Type != "" {
+		if scheme != "anytls" && scheme != "hysteria2" && scheme != "tuic" && n.Type != "" {
 			q.Set("type", n.Type)
 		}
 		if n.Path != "" {

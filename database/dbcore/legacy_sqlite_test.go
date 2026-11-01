@@ -63,6 +63,17 @@ func TestResolveDefaultHTTPListenDoesNotJumpExistingLiteDBToPlusDefault(t *testi
 	}
 }
 
+func TestResolveDefaultHTTPListenKeepsPlusSchemaOnPlusDefault(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "lite.db"), []byte("CREATE TABLE nodemgt_inbounds (id text);"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := ResolveDefaultHTTPListen(dir)
+	if got != defaultPlusHTTPListen {
+		t.Fatalf("Plus schema without marker = %q, want %q", got, defaultPlusHTTPListen)
+	}
+}
+
 func TestRememberHTTPListenPersistsCustomAddress(t *testing.T) {
 	dir := t.TempDir()
 	if err := RememberHTTPListen(dir, "127.0.0.1:9443"); err != nil {

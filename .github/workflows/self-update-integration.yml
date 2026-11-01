@@ -103,7 +103,6 @@ jobs:
             }],
           };
           fs.writeFileSync(path.join(dir, "lite-update.json"), JSON.stringify(manifest));
-          fs.writeFileSync(path.join(dir, "komari-update.json"), JSON.stringify(manifest));
           NODE
 
       - name: Smoke test static binary on mainstream distributions

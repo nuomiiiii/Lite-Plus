@@ -11,3 +11,4 @@ src/utils/agentInstall.ts
 tests/agentInstall.test.ts
 src/components/admin/shell/useAdminShell.ts
 src/components/LiteBrand.tsx
+src/pages/admin/settings/account-security.tsx

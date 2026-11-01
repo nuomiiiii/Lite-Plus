@@ -12,6 +12,8 @@ cmd/server.go
 cmd/version.go
 database/accounts/2fa.go
 database/dbcore/http_listen.go
+database/dbcore/preserve_https.go
+database/dbcore/preserve_https_test.go
 pkg/config/settings.go
 utils/httpsserver/httpsserver.go
 web/api/public/mjpeg.go
@@ -21,6 +23,7 @@ web/api/admin/download.go
 .github/workflows/rebuild-release.yml
 .github/workflows/release.yml
 .github/workflows/follow-lite.yml
+.github/workflows/self-update-integration.yml
 scripts/plus_follow.py
 scripts/plus_follow_test.py
 scripts/follow-merge.sh

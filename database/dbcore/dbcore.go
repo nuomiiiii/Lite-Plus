@@ -1003,6 +1003,9 @@ func doInitialize() error {
 		return fmt.Errorf("failed to run startup migrations: %w", err)
 	}
 	config.SetDb(instance)
+	if err := preserveLegacyHTTPSListen(); err != nil {
+		return fmt.Errorf("failed to preserve legacy HTTPS listen: %w", err)
+	}
 
 	// 配置库就绪后、执行后续 AutoMigrate 与一次性 metrics 迁移之前：
 	// 基于配置中的版本标记检测升级并自动备份 ./data，便于回滚。

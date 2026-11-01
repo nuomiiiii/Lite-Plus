@@ -26,10 +26,14 @@ class PlusFollowTests(unittest.TestCase):
         ours = (pathlib.Path(__file__).resolve().parent / "follow-ours-web.txt").read_text(encoding="utf-8")
         self.assertIn("src/utils/agentInstall.ts", ours)
         self.assertIn("tests/agentInstall.test.ts", ours)
+        self.assertIn("src/pages/admin/settings/account-security.tsx", ours)
 
     def test_ours_keeps_plus_bgp_table(self) -> None:
         server = (pathlib.Path(__file__).resolve().parent / "follow-ours-server.txt").read_text(encoding="utf-8")
         self.assertIn("database/tasks/return_route_bgp_prefixes.json", server)
+        self.assertIn("database/dbcore/http_listen.go", server)
+        self.assertIn("database/dbcore/preserve_https.go", server)
+        self.assertIn(".github/workflows/self-update-integration.yml", server)
 
     def test_c_class_covers_i18n_and_mcp(self) -> None:
         web = (pathlib.Path(__file__).resolve().parent / "follow-c-web.txt").read_text(encoding="utf-8")

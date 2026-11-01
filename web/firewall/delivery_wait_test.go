@@ -65,6 +65,11 @@ func TestDispatchRegistersWaiterBeforeSend(t *testing.T) {
 	if !strings.Contains(push, "HealPairedPolicy(") || !strings.Contains(push, "log.Printf(") {
 		t.Fatal("reconnect must persist the ping/deny switch onto both stacks and log a failed heal")
 	}
+	heal := strings.Index(push, "HealPairedPolicy(")
+	applied := strings.Index(push, "AppliedRevision >= row.Revision")
+	if heal < 0 || applied < 0 || heal > applied {
+		t.Fatal("heal must run even when the last apply was already marked done")
+	}
 	inflight := extractFunc(text, "func applyInFlight")
 	if !strings.Contains(inflight, "DeliverySent") || !strings.Contains(inflight, "applyWait") || !strings.Contains(inflight, "applyRetrySkew") {
 		t.Fatal("in-flight apply must cover the sent window plus retry skew")
