@@ -7,6 +7,8 @@ install-lite.sh
 scripts/test-install-upgrade.sh
 Dockerfile
 README.md
+docs/assets/sponsors/ppflight-banner.png
+docs/assets/sponsors/ppflight-banner-mobile.png
 database/tasks/return_route_bgp_prefixes.json
 cmd/server.go
 cmd/version.go

@@ -1,174 +1,50 @@
-![Lite](docs/assets/branding/lite-banner.svg)
+![Lite-Plus](docs/assets/branding/lite-banner.svg)
 
 [![Release](https://img.shields.io/github/v/release/nuomiiiii/Lite-Plus?label=release)](https://github.com/nuomiiiii/Lite-Plus/releases)
 [![Docker](https://img.shields.io/badge/GHCR-nuomiiiii%2Flite--plus-2496ED?logo=docker)](https://github.com/nuomiiiii/Lite-Plus/pkgs/container/lite-plus)
-[![Telegram](https://img.shields.io/badge/Telegram-Lite-26A5E4?logo=telegram&logoColor=white)](https://t.me/komari_lite)
+[![Telegram](https://img.shields.io/badge/Telegram-Lite--Plus-26A5E4?logo=telegram&logoColor=white)](https://t.me/komari_lite)
 [![License](https://img.shields.io/github/license/nuomiiiii/Lite-Plus)](LICENSE)
 
-Lite 是一款轻量、自托管的服务器监控与运维管理工具。服务端提供 Web 管理界面，Agent 负责采集节点状态、执行延迟与回程线路探测，并在管理员授权后提供远程终端、文件管理和任务执行能力。通过 MCP 代理，还可以让 AI 客户端在授权有效期内管理选定的服务器。
-
-本项目基于 [komari-monitor/komari](https://github.com/komari-monitor/komari) 持续开发，重点改善低配置主控上的数据库占用、历史查询和维护负载，同时提供流量管理、成本中心、备份迁移、接入安全与适配电脑和手机的管理界面。
+**Lite-Plus** 是从 [Lite](https://github.com/nuomiiiii/Lite) 独立出来的自托管监控与节点管理面板。服务端提供 Web 后台，配套 [Lite-Plus-agent](https://github.com/nuomiiiii/Lite-Plus-agent) 采集节点状态、探测延迟和回程线路；管理员授权后可远程终端、管文件、跑任务。在此之上，Lite-Plus 还管节点上的入站 / 出站 / 路由 / 用户 / 订阅，以及主机入站防火墙。
 
 **当前正式版：Lite-Plus [`0.1.5`](https://github.com/nuomiiiii/Lite-Plus/releases/tag/0.1.5) · 配套 Agent [`0.0.3.1`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.0.3.1) · 默认主题 [`1.2.9`](https://github.com/nuomiiiii/Lite-theme/releases/tag/v1.2.9)**
 
-[使用手册](https://nuomiiiii.github.io/Lite-document/) · [快速开始](#快速开始) · [功能概览](#功能概览) · [升级说明](#从旧版本升级) · [Agent](#agent-与远程管理) · [MCP 代理](#mcp-代理与-ai-授权) · [完整更新日志](https://github.com/nuomiiiii/Lite-Plus/releases)
+[使用手册](https://nuomiiiii.github.io/Lite-document/) · [快速开始](#快速开始) · [功能概览](#功能概览) · [从 Lite 升级](#从-lite-升级) · [Agent](#agent-与远程管理) · [更新日志](https://github.com/nuomiiiii/Lite-Plus/releases)
 
 > [!WARNING]
-> Lite 只能部署在你拥有或已获得授权管理的设备上。请勿将其用于未经授权的访问、持久化、命令执行或其他滥用行为。管理员应启用 HTTPS 与双因素认证，并妥善保护 Agent Token 和备份文件。
+> Lite-Plus 只能部署在你拥有或已获得授权管理的设备上。请勿将其用于未经授权的访问、持久化、命令执行或其他滥用行为。管理员应启用 HTTPS 与双因素认证，并妥善保护 Agent Token 和备份文件。
 
-## 0.1.5
+## 赞助商
 
-> [!IMPORTANT]
-> 建议尽快更新本次主控。Hysteria2 / TUIC 出站需搭配 Lite-Plus-agent `0.0.3.1`。从 Lite 升级过来、从没单独改过 HTTPS 端口时，会继续用原来的端口。
-
-- 入站、出站可选 Hysteria2、TUIC。选 Xray 时不显示 Hysteria2、TUIC、AnyTLS；改成 sing-box 后才出现。
-- 出站可粘贴 `hysteria2://`、`hy2://`、`tuic://` 导入。订阅链接同样带上这两项。
-- 保存入站时如果没改公开端口，会保留原来的值。
-- 从 Lite 升级且从未保存过 HTTPS 监听时，继续用原来的 HTTPS 端口，不会改成 Plus 新安装默认端口。
-- 自更新只认 `lite-update.json` 和 `Lite-$GOOS-$GOARCH`。
-- 改用户名失败时会显示服务器返回的原因。
-- 防火墙节点在线状态按 Agent 实际上线显示。节点离线时，下发不再标成已发送。
-
-## 0.1.4
-
-> [!IMPORTANT]
-> 建议尽快更新本次主控，并升级配套 Agent 到 `0.0.2.8`。旧版本在只有 IPv4 或只有 IPv6 的机器上，防火墙可能把另一边也锁死。
-
-- 防火墙按节点实际上报的地址显示规则页：只有 IPv4 或只有 IPv6 时，不再出现另一边；还没上报地址时提示等待，不显示空表。
-- 节点入站的地址栈只保留这台机器已有的选项。没有 IPv4 就不能再选 IPv4 或双栈，没有 IPv6 同理；保存时也会拦住。
-- 节点地址变化后会同步到后台。后出现的 IPv4 / IPv6 会跟上同一套默认拒绝和禁 ping。需搭配 Lite-Plus-agent `0.0.2.8`。
-- 手机上看防火墙节点信息时，IPv4 和 IPv6 分行显示；电脑仍是一行。
-
-## 0.1.3
-
-- 入口管理可分别开关「下发订阅名称」和「下发流量和到期信息」，默认关闭。开启后，客户端导入时可显示「用户名 · 套餐名」，以及已用流量、额度和到期时间，无限额显示为 0。来自 @Sowhat1217 #4。
-- 反向代理的内置 HTTPS 增加「复用根域名证书」。签发管理里只有一张已签发的根域名证书时直接套用；有多张时弹出选择。
-- 主机没有可用防火墙时，远程管理可安装 nftables，装完由 Plus 接管入站。不会启用系统自带的 nftables 服务。需搭配 Lite-Plus-agent `0.0.2.3`。
-- 主机已有 nftables / iptables / UFW / firewalld 且带默认拒绝时，后台放行的端口会写进那条入站链，不再出现链里已放行、外面仍不通。需搭配 Lite-Plus-agent `0.0.2.3`。
-- 防火墙规则按优先级排序；同步主机规则不再把 Plus 自己的链扫进来报超时。
-- 入站删除后，对应的防火墙放行会一并清掉，不再留在主机上。
-- 从入站复制 Shadowsocks 出站时，会带上 TCP / UDP 网络选择。需搭配 Lite-Plus-agent `0.0.2.3`。
-
-## 0.1.2
-
-- 入口管理可分别开关「下发订阅名称」和「下发流量和到期信息」，默认关闭。开启后，客户端导入时可显示「用户名 · 套餐名」，以及已用流量、额度和到期时间，无限额显示为 0。来自 @Sowhat1217 #4。
-- 反向代理的内置 HTTPS 增加「复用根域名证书」。签发管理里只有一张已签发的根域名证书时直接套用；有多张时弹出选择。
-- 主机没有可用防火墙时，远程管理可安装 nftables，装完由 Plus 接管入站。不会启用系统自带的 nftables 服务。需搭配 Lite-Plus-agent `0.0.2.3`。
-- 主机已有 nftables / iptables / UFW / firewalld 且带默认拒绝时，后台放行的端口会写进那条入站链，不再出现链里已放行、外面仍不通。需搭配 Lite-Plus-agent `0.0.2.3`。
-- 防火墙规则按优先级排序；同步主机规则不再把 Plus 自己的链扫进来报超时。
-- 入站删除后，对应的防火墙放行会一并清掉，不再留在主机上。
-- 从入站复制 Shadowsocks 出站时，会带上 TCP / UDP 网络选择。需搭配 Lite-Plus-agent `0.0.2.3`。
-
-## 0.1.1
-
-- Shadowsocks 入站网络可选 TCP, UDP、TCP、UDP，默认 TCP, UDP。需搭配 Lite-Plus-agent `0.0.2.2`。
-- sing-box 的 UDP 入站可开关 UDP 分片，默认关闭；Xray 不显示此项。大包发不出时可打开。需搭配 Lite-Plus-agent `0.0.2.2`。
-- 修复入站订阅排序留空时没有排到全部入站最后的 bug。
-
-## 0.1.0
-
-- 修复入站勾选「同时放行该端口」后，防火墙里会出现两条相同放行的 bug。需搭配 Lite-Plus-agent `0.0.2.1`。
-- 防火墙新建规则时，协议、端口、来源都相同则禁止添加并提示。来源不同（例如限定 IP 与任意）可以并存。
-- 修复新建入站时订阅排序填 0 会被改成自动序号的 bug。0 排最前；留空才自动排到最后。
-
-## 0.0.9
-
-- 修复入站改成 Reality 后，订阅和分享链接仍带上之前 TLS SNI 的 bug。
-- 防火墙规则端口可填 `*`，表示全部端口。
-- 修复改防火墙规则后，该条会跑到列表最后的 bug。
-- 修复关掉或保存出站、路由、用户后，该行会跑到列表最后的 bug。
-- 修复删除入站后，用了该入站的用户被误删的 bug。
-
-## 0.0.8
-
-- 远程管理开启后，可按服务器管理本机入站防火墙：IPv4 / IPv6 规则、禁止 ping、入站默认拒绝。规则保存在主控，节点重装后会再下发。
-- Linux 支持 nft / iptables / ufw / firewalld，Windows 走系统防火墙。入站默认拒绝会留下本机回环、已建立连接、SSH（Windows 另留远程桌面 / WinRM），以及 Agent 连主控的通道。
-- SSH 端口先回读本机正在监听的端口，可在后台修改；确认后会同步改 sshd 并重载。改失败会回滚，页面显示实际监听口。
-- 可扫描主机上已有的简单入站规则并收进 Plus，可选停用对应原规则。也可导入、导出规则文件。
-- 节点入站可勾选「同时放行该端口」，按该入站的地址栈写入防火墙；关闭或删除入站时自动去掉。
-- 节点可设置出站地址族：双栈、仅 IPv4、仅 IPv6、IPv4 优先、IPv6 优先。该节点上的 Xray 和 sing-box 共用。
-- 修复删除服务器后，该节点入站、用户和证书记录残留的问题。
-- 防火墙、出站地址族和入站联动放行需搭配 Lite-Plus-agent `0.0.1.5`。
-
-## 0.0.7
-
-- sing-box 的 VLESS 入站也可配置 Flow（Vision），和 Xray 一样。用户上选了 Flow 会覆盖入站默认值，订阅也会带上。
-- 修复订阅设置独立监听端口后，仍能从面板 HTTP / HTTPS（含自定义面板端口）拉取订阅的bug。
-- 优化订阅监听端口、反代端口，以及对外地址预填的UI显示。
-- 修复 HTTP 下无法复制订阅地址、入站地址的bug。
-- 修复入站端口允许填 0 或超出 1–65535 的bug。
-- 修复路由匹配不准的bug：普通域名按后缀命中；未选协议或网络表示不限制。同一条规则里填了的域名、IP、端口、协议、来源需同时命中。
-- 修复在线 IP 上限设为 0（不限制）保存后失效，以及编辑用户时未改到期时间却被覆盖的bug。
-- 修复关闭中的入站、出站、路由保存后又被打开，以及仍被入站使用的证书仍可删除的bug。
-- 修复订阅预览把带路径的 https 地址当成节点链接的bug。
-- 修复部分在线用户看不到在线 IP 的bug。
-- 节点上的 IP 限制和路由匹配和 sing-box 的 VLESS 配置 Vision 需搭配 Lite-Plus-agent `0.0.1.4`使用。
-
-## 0.0.6
-
-- 优化 ss 协议相关逻辑。
-- 开启「复用内置 HTTPS」后，对外地址不再自动填入证书域名。
-
-## 0.0.5
-
-- HTTP 入站可填写账号密码，也可开关「允许透明」。新建会自动生成一组账户。
-- 签发管理没有根证书时不再显示「暂无记录」；可申请多个不同根域的证书。
-- 新建证书默认「根证书下发」。主控申请和根域证书在到期前可开关自动续签，默认开启。
-- 节点管理表格一屏展示完，不再错位；长名称截断显示，操作列不再被挤掉；入站、出站、路由、用户、套餐、订阅、证书、审计可拖自定义列宽。
-- 非 Shadowsocks 出站保存时不再带上加密方式。
-
-## 0.0.4
-
-- 签发管理可申请根域名证书（含通配），再下发到多个节点；节点上选择根证书并填写子域名即可。
-- 主控申请改为给该节点单独申请域名，不必跟根证书相同。证书文件只在节点上：Agent 先提交 CSR，主控再用 Cloudflare DNS-01 向 Let's Encrypt 签发，成功后把证书链下发回去。
-- 入站补齐 HTTP。
-- Shadowsocks 入站按完整协议可用，默认加密 `2022-blake3-aes-128-gcm`。
-- 订阅里的节点名称只用入站名称，不再拼用户名。
-
-## 0.0.3
-
-- 订阅增加 Clash / Loon / Surge / sing-box 规则模板，可绑定到订阅或套餐，也可按客户端自动识别；原 clash / sing-box 固定格式不受影响。根据 https://github.com/nuomiiiii/Lite-Plus/pull/1 进行修改。
-- 订阅入口可复用内置 HTTPS：监听端口用反向代理证书再反代一次，对外地址自动填入证书域名。
-- Cloudflare DNS-01 申请证书不再填 Zone ID；Token 和 ACME 邮箱必填；签发账户改为 RSA 2048；可清空签发设置。
-- 修复 DNS-01 验证时 TXT 尚未生效就提交导致申请失败。
-- 主控申请 Let's Encrypt 时只把证书链下发到节点，不再整节点推配置。
-- 优化部分操作页面。
-
-## 0.0.2
-
-- 修复新增/删除用户入站分配卡顿bug。
-- 仅 IPv6 / 双栈 + 节点地址时，订阅用该节点 IPv6 拼订阅地址；仅 IPv4 仍用 IPv4；已签发证书域名仍然优先。
-
-## 0.0.1 稳定版能力摘要
-
-- 新增节点管理：入站、出站、路由、节点用户、套餐、证书和订阅，保存后下发到 Lite-Plus-agent。
-- 入站支持 VLESS / VMess / Trojan / Shadowsocks / Hysteria2 / TUIC，以及 TLS / Reality。新建默认仅 IPv4。
-- 出站和路由：节点自带直连、阻断。同一节点上出站标签不能重复。可从已有入站或分享链接导入出站。
-- 用户和套餐：额度、限速、到期时间和在线 IP 上限。
-- 证书可由主控用 Cloudflare DNS-01 代申请，私钥留在节点；也可以绑定节点上已有的证书文件。
-- 新安装默认 HTTP 28777、HTTPS 37888。从 Lite 数据目录升级时保留原来的端口。
-- Linux 直装运行 Plus 安装脚本，已有 /opt/lite 的 Lite 实例选「升级」。
-- Docker 安装替换镜像文件即可。
+<a href="https://www.ppflight.com/?aff=1032">
+  <picture>
+    <source media="(max-width: 600px)" srcset="docs/assets/sponsors/ppflight-banner-mobile.png" />
+    <img src="docs/assets/sponsors/ppflight-banner.png" width="100%" alt="PPFlight · 签三网精品 做优质落地 · 访问官网" />
+  </picture>
+</a>
 
 ## 功能概览
 
-| 模块 | 现有能力 |
+| 模块 | 能力 |
 | --- | --- |
 | 节点监控 | CPU、内存、磁盘、网络、负载、连接数、运行时间、在线状态与实时流量 |
-| 节点管理 | 分组、备注、标签、国家/地区修正、分页排序、重置 Token、账单、价格、货币、流量额度和重置日，以及 Agent 配置上报、在线下发与结果确认 |
-| 仪表盘配置 | 预制布局、模块开关与排序、卡片宽度、实时与历史独立刷新、Top 5/10/15/20 排行、近 30 天流量和每日服务器明细，以及按到期日汇总的续费日历 |
-| 成本中心 | 日/月/年费用、资费版本、附加费用、剩余价值、到期提醒、多币种汇总与作废冲销 |
-| 延迟监测 | IPv4/IPv6 目标探测、历史曲线、平均时延、延迟抖动、近 15 分钟丢包排行、任务排序和异常告警 |
-| 回程线路 | 电信、移动、联通线路识别，切线与恢复判断、BGP 规则自动更新、监测记录与通知，以及需主动开启的 IP 疑似被墙实验功能 |
-| 通知与报告 | 按告警类型选择渠道，可同时发给多路；相同内容可在设定时间内汇总成一条。另有离线通知、负载告警、延迟丢包告警、流量告警，以及日/周/月流量报告 |
-| 远程管理 | 多会话 Web 终端、文件管理、命令剪贴板、远程任务执行和定时任务；单次最长 6 小时，空闲 30 分钟结束。需要同时开启站点和 Agent 本地开关，并完成管理员重新验证 |
-| MCP 代理 | AI 客户端接入、按节点授权、可选长期授权、命令与文件操作、交互终端、并发限制、操作记录及授权撤销 |
-| 数据与存储 | SQLite 占用明细、运行诊断、历史分层、上游 1.3.1/1.4.x 数据迁移、WAL 维护、手动空间回收、完整备份恢复和仅配置导出 |
-| 接入与安全 | 管理员登录、双因素认证、单点登录、会话管理、API 与 WebSocket Origin 校验、内置 HTTPS、反向代理和 Cloudflare Tunnel |
-| 外观与多端 | 系统 UI 与公开主题独立、主题市场、预览缓存、多语言主题信息、节点与 Ping 任务选择器、最后一个主题保护；电脑端列表、手机端卡片，并适配简体中文、繁体中文、英文、日文 |
-| 部署与更新 | systemd / OpenWrt procd 一键安装与受控回退、Docker、Windows/Linux 多架构二进制和在线更新校验 |
+| 节点管理 | 入站、出站、路由、用户、套餐、证书和订阅，保存后下发到配套 Agent。入站支持 VLESS / VMess / Trojan / Shadowsocks / HTTP / Hysteria2 / TUIC / AnyTLS，以及 TLS / Reality；Hysteria2、TUIC、AnyTLS 使用 sing-box。可从分享链接或已有入站导入出站 |
+| 主机防火墙 | 按服务器管理本机入站规则、禁止 ping、默认拒绝。Linux 支持 nft / iptables / ufw / firewalld，Windows 走系统防火墙。规则保存在主控，节点重装后会再下发 |
+| 仪表盘 | 预制布局、模块开关与排序、实时与历史刷新、流量排行、每日明细、按到期日汇总的续费日历 |
+| 成本中心 | 日/月/年费用、资费版本、附加费用、剩余价值、到期提醒、多币种汇总 |
+| 延迟与回程 | IPv4/IPv6 探测、历史曲线、丢包与抖动、电信 / 移动 / 联通回程识别 |
+| 通知 | 按告警类型选择渠道，可同时发给多路；相同内容可在设定时间内汇总。离线、负载、延迟丢包、流量告警，以及日/周/月流量报告 |
+| 远程管理 | 多会话 Web 终端、文件管理、命令剪贴板、远程任务和定时任务；单次最长 6 小时，空闲 30 分钟结束。需要同时开启站点和 Agent 本地开关 |
+| MCP 代理 | AI 客户端接入、按节点授权、可选长期授权、命令与文件操作、交互终端、操作记录及撤销 |
+| 接入与安全 | 管理员登录、双因素认证、通行密钥、会话管理、内置 HTTPS、反向代理和 Cloudflare Tunnel |
+| 外观 | 系统 UI 与公开主题独立；电脑端列表、手机端卡片；简体中文、繁体中文、英文、日文 |
+| 部署 | systemd / OpenWrt procd 一键安装、Docker、Windows / Linux 多架构二进制和在线更新 |
+
+逐条变更见 [GitHub Release](https://github.com/nuomiiiii/Lite-Plus/releases)。
 
 ## 快速开始
+
+新安装默认 HTTP `28777`、HTTPS `37888`。
 
 ### Linux 一键安装
 
@@ -184,40 +60,42 @@ OpenWrt / iStoreOS 以 root 登录后（通常没有 bash、sudo 或 curl）：
 wget -O install-lite.sh https://raw.githubusercontent.com/nuomiiiii/Lite-Plus/main/install-lite.sh && sh install-lite.sh
 ```
 
-安装脚本会按环境选择 systemd 或 procd；满足运行时检查与回退条件后，可使用后台“立即更新”。官方 Linux 包提供 `amd64`、`arm64`、`386`、`riscv64` 和 `loong64`，软路由也需匹配其中一种架构。安装完成后访问 `http://<服务器或路由器 IP>:28777`。正式环境可在后台启用内置 HTTPS，也可以使用反向代理或 Cloudflare Tunnel 接入。详细步骤见[Linux 脚本安装手册](https://nuomiiiii.github.io/Lite-document/install/linux)。
+安装脚本会按环境选择 systemd 或 procd。官方 Linux 包提供 `amd64`、`arm64`、`386`、`riscv64` 和 `loong64`。安装完成后访问 `http://<服务器或路由器 IP>:28777`。正式环境可在后台启用内置 HTTPS，也可以使用反向代理或 Cloudflare Tunnel。步骤见[Linux 脚本安装](https://nuomiiiii.github.io/Lite-document/install/linux)。
+
+已有 `/opt/lite` 的 Lite 实例选「升级」，监听端口按原值保留。
 
 ### Docker
 
 ```bash
 mkdir -p ./data
 docker run -d \
-  --name lite \
+  --name lite-plus \
   --restart unless-stopped \
   -p 28777:28777 \
   -v "$(pwd)/data:/app/data" \
   ghcr.io/nuomiiiii/lite-plus:latest
 ```
 
-固定使用当前正式版时，将镜像标签改为 `ghcr.io/nuomiiiii/lite-plus:2.3.7`。
+固定版本时把标签改成 `ghcr.io/nuomiiiii/lite-plus:0.1.5`。镜像包含 `linux/amd64` 和 `linux/arm64`。
 
-更新 Docker 部署前请先备份 `data` 目录，然后拉取新镜像并使用原来的端口和数据挂载重新创建容器：
+更新前先备份 `data`，再拉新镜像并用原来的端口和数据挂载重建容器：
 
 ```bash
 docker pull ghcr.io/nuomiiiii/lite-plus:latest
-docker rm -f lite
+docker rm -f lite-plus
 docker run -d \
-  --name lite \
+  --name lite-plus \
   --restart unless-stopped \
   -p 28777:28777 \
   -v "$(pwd)/data:/app/data" \
   ghcr.io/nuomiiiii/lite-plus:latest
 ```
 
-不要在未确认备份的情况下删除宿主机数据目录。
+已有容器若仍叫 `lite`，重建时沿用原来的名字即可。不要在未确认备份的情况下删除宿主机数据目录。
 
 ### 二进制文件
 
-从 [Releases](https://github.com/nuomiiiii/Lite-Plus/releases) 下载与系统架构匹配的文件。正式版提供 Linux `386`、`amd64`、`arm64`、`loong64`、`riscv64`，以及 Windows `386`、`amd64`、`arm64` 构建。
+从 [Releases](https://github.com/nuomiiiii/Lite-Plus/releases) 下载与系统架构匹配的文件。正式版提供 Linux `386`、`amd64`、`arm64`、`loong64`、`riscv64`，以及 Windows `386`、`amd64`、`arm64`。发布包文件名仍是 `Lite-$GOOS-$GOARCH`。
 
 ```bash
 chmod +x Lite-linux-amd64
@@ -228,56 +106,43 @@ chmod +x Lite-linux-amd64
 
 ## Agent 与远程管理
 
-Lite-Plus 推荐配套 [Lite-Plus-agent `0.0.1.1`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.0.1.1)。先在后台添加节点，再打开该节点的“节点配置 → 部署指令”，复制完整命令到目标服务器执行。自动发现注册已下线，新安装和 Docker 重建均使用具体节点的部署指令。
+Lite-Plus 配套 [Lite-Plus-agent `0.0.3.1`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.0.3.1)。先在后台添加节点，再打开该节点的「节点配置 → 部署指令」，复制完整命令到目标服务器执行。新安装和 Docker 重建都用该节点自己的部署指令。
 
-远程终端、文件管理和远程执行需要同时开启 Lite“系统设置 → 通用 → 允许远程管理”与 Agent 本地 `--enable-remote-control`，新安装默认关闭。进入远程功能时，已启用通行密钥的账号可用通行密钥验证；已启用两步验证但未使用通行密钥时输入当前验证码；未启用时重新输入管理员密码。浏览器远程终端单次最长 6 小时，空闲 30 分钟会结束。
+远程终端、文件管理和远程执行需要同时开启 Lite-Plus「系统设置 → 通用 → 允许远程管理」与 Agent 本地 `--enable-remote-control`，新安装默认关闭。进入远程功能时，已启用通行密钥的账号可用通行密钥验证；已启用两步验证但未使用通行密钥时输入当前验证码；未启用时重新输入管理员密码。浏览器远程终端单次最长 6 小时，空闲 30 分钟会结束。
 
-在线配置支持采集间隔、流量重置日、网卡、挂载点、内存缓存计入方式与 GPU 监控的保存、下发和结果确认。远程控制开关等安装选项需要更新节点本地启动参数并重启或重新安装 Agent。安装、日志、更新和卸载步骤见[Agent 安装与维护](https://nuomiiiii.github.io/Lite-document/install/agent)，操作方式见[远程终端与文件](https://nuomiiiii.github.io/Lite-document/remote/terminal)。
+采集间隔、流量重置日、网卡、挂载点等可在线保存并下发。远程控制开关等安装选项需要改节点本地启动参数并重启或重装 Agent。见[Agent 安装与维护](https://nuomiiiii.github.io/Lite-document/install/agent)和[远程终端与文件](https://nuomiiiii.github.io/Lite-document/remote/terminal)。
 
 ### MCP 代理与 AI 授权
 
-1. 使用配套 Lite-agent，并开启上述站点和 Agent 远程控制开关，再开启“系统设置 → 通用 → 启用 MCP 代理”。
-2. 进入“远程管理 → MCP 代理”，复制服务地址，例如 `https://monitor.example.com/mcp`，添加到支持浏览器授权的 AI 客户端。
-3. 客户端发起连接后，在 Lite 中选择允许管理的服务器、授权时长或长期授权，以及可选备注，输入管理员密码、两步验证码或通行密钥，点击“授权并连接”。
-4. 回到 AI 客户端执行操作；在 Lite 的“授权详情”和“操作记录”中查看状态、导出记录或撤销授权。
+1. 使用配套 Lite-Plus-agent，开启站点和 Agent 远程控制，再开启「系统设置 → 通用 → 启用 MCP 代理」。
+2. 进入「远程管理 → MCP 代理」，复制服务地址（例如 `https://monitor.example.com/mcp`）添加到支持浏览器授权的 AI 客户端。
+3. 客户端发起连接后，在 Lite-Plus 中选择允许管理的服务器、授权时长或长期授权，输入管理员密码、两步验证码或通行密钥，点击「授权并连接」。
+4. 回到 AI 客户端执行操作；在 Lite-Plus 的「授权详情」和「操作记录」中查看状态、导出记录或撤销授权。
 
-MCP 默认关闭。批准页可以勾选长期授权，默认不勾选。勾选后，这条授权在撤销前一直有效，AI 以 Agent 运行账户的权限执行命令、使用终端和读写文件，Lite 不会逐次确认。到期或撤销会结束相关访问，已完成的修改不会自动回滚。详细配置与排查见[MCP 代理与 AI 授权手册](https://nuomiiiii.github.io/Lite-document/remote/mcp)。
+MCP 默认关闭。批准页可以勾选长期授权，默认不勾选。勾选后，这条授权在撤销前一直有效，AI 以 Agent 运行账户的权限执行命令、使用终端和读写文件，Lite-Plus 不会逐次确认。到期或撤销会结束相关访问，已完成的修改不会自动回滚。详见[MCP 代理与 AI 授权](https://nuomiiiii.github.io/Lite-document/remote/mcp)。
 
-## 数据库与升级说明
+## 从 Lite 升级
 
-### SQLite 指标存储
-
-SQLite 指标库使用紧凑的无损编码和分层保留。压缩不会额外改变已采集指标的数值精度，详细指标和历史汇总继续遵循后台设置的保留周期；流量报告所需的累计值由独立精确账本保存。
-
-数据库缓存、查询并发和后台维护批次会根据主控资源自动调整。已经形成的历史数据堆积会从保存位置继续处理，每批成功后才清理对应旧数据；失败时保留原数据并在后续重试。
-
-这套迁移只适用于 SQLite 指标存储。外置 MySQL 或 PostgreSQL 不会进入 SQLite 指标库迁移，也不会显示对应进度。
-
-### 从旧版本升级
+只支持从 Lite 的数据目录升级。HTTP `-l`、`LITE_LISTEN` 和已保存的 HTTPS 端口按原值保留；从没改过 HTTPS 端口时也继续用原来的端口，不会改成 Lite-Plus 新安装默认的 `37888`。
 
 > [!IMPORTANT]
-> 从旧数据库布局升级时可能需要迁移。升级前请备份完整 `data` 目录；首次启动时不要中断迁移，并等待后台迁移页面明确显示完成。
+> 升级前请备份完整 `data` 目录。首次启动时不要中断迁移，并等待后台明确显示完成。
 
-1. 停止旧 Lite，备份程序和完整 `data` 目录。
-2. 更新程序或容器，并保持原有 `data` 挂载不变。
-3. 打开管理页面查看迁移进度，确认节点连接、历史曲线、账单与远程功能正常，并保留备份供回退。
-4. SQLite 产生的空闲页会继续复用；如需立即把空间归还给磁盘，可在业务低峰期手动执行一次“回收空间”。
+1. 停止原来的 Lite，备份程序和完整 `data` 目录。
+2. 换成 Lite-Plus 程序或容器，保持原有 `data` 挂载不变。Linux 直装跑 Lite-Plus 安装脚本，已有 `/opt/lite` 时选「升级」。Docker 替换镜像文件即可。
+3. 打开管理页面，确认节点连接、历史曲线、账单、远程功能和节点管理正常，并保留备份供回退。
 
-上游 `1.3.1`、`1.3.2`、`1.4.x` 以及本分支 `2.1.7` 至 `2.1.11` 的 SQLite 指标库会通过同一迁移页面转换为当前格式，原有数据保留周期不会被改回默认值。监控数据固定启用分层降采样，升级时会自动停用旧版低资源模式。
-
-完整步骤与兼容范围见[更新与数据库迁移](https://nuomiiiii.github.io/Lite-document/install/update)。
+完整步骤见[更新与数据库迁移](https://nuomiiiii.github.io/Lite-document/install/update)。
 
 ## Linux 一键更新与回退
 
-一键更新面向官方脚本安装、由 systemd 或 OpenWrt / iStoreOS procd 管理且满足运行时检查的 Linux 实例。更新程序会校验版本、构建标识、大小和 SHA-256，备份当前程序及完整 `data`，并在新版本启动或健康检查失败时尝试恢复旧程序和更新前数据。
+一键更新面向官方脚本安装、由 systemd 或 OpenWrt / iStoreOS procd 管理且满足运行时检查的 Linux 实例。更新程序会校验版本、构建标识、大小和 SHA-256，备份当前程序及完整 `data`，并在新版本启动或健康检查失败时尝试恢复。
 
-Docker、Windows、不受支持的服务管理方式、外置指标数据库和不满足原子回退条件的目录布局不会启用该入口。更新前仍应保留完整备份；详细限制见 [Linux 一键更新与回退](docs/self-update.md)。
+Docker、Windows、不受支持的服务管理方式、外置指标数据库和不满足原子回退条件的目录布局不会启用该入口。更新前仍应保留完整备份；限制见 [Linux 一键更新与回退](docs/self-update.md)。
 
 ## 从源码构建
 
-后端使用 Go `1.26.10`，前端构建推荐使用 Node.js `24`，与当前发布流程一致。
-
-以下命令编译服务端；完整网页还需要准备后文所述的系统 UI 与主题资源。
+后端使用 Go `1.26.10`，前端构建推荐 Node.js `24`。
 
 ```bash
 git clone https://github.com/nuomiiiii/Lite-Plus.git
@@ -286,21 +151,17 @@ go build -o Lite
 ./Lite server -l 0.0.0.0:28777
 ```
 
-正式构建会将 [Lite-Plus-web](https://github.com/nuomiiiii/Lite-Plus-web) 作为独立系统 UI 构建，并把产物放入 `web/public/systemUI/dist`；公开大屏主题则保存在独立的主题目录中。正式版本必须使用与 Lite-Plus 相同版本的 Lite-Plus-web 标签，可参考仓库内的 GitHub Actions 构建流程。
+完整网页需要把 [Lite-Plus-web](https://github.com/nuomiiiii/Lite-Plus-web) 构建产物放入 `web/public/systemUI/dist`，并把公开大屏主题放到主题目录。正式版本必须使用与 Lite-Plus 相同版本号的 Lite-Plus-web 标签，可参考仓库内的 GitHub Actions。
 
 ## 相关链接
 
-- [版本发布与完整更新日志](https://github.com/nuomiiiii/Lite-Plus/releases)
-- [Lite 文档](https://nuomiiiii.github.io/Lite-document/)
+- [版本发布与更新日志](https://github.com/nuomiiiii/Lite-Plus/releases)
+- [使用手册](https://nuomiiiii.github.io/Lite-document/)
 - [Telegram 群组](https://t.me/komari_lite)
 - [Lite-Plus Agent](https://github.com/nuomiiiii/Lite-Plus-agent)
 - [Lite-Plus Web](https://github.com/nuomiiiii/Lite-Plus-web)
 - [Lite-Theme](https://github.com/nuomiiiii/Lite-theme)
-- [上游 Komari](https://github.com/komari-monitor/komari)
-
-## 致谢
-
-感谢上游维护者、Agent 与主题贡献者，以及持续提供测试和反馈的社区用户。本分支保留上游版权与 MIT 许可证。
+- [Lite](https://github.com/nuomiiiii/Lite)
 
 ## 许可证
 
