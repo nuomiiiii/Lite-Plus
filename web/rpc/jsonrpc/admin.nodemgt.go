@@ -1717,12 +1717,18 @@ func nodemgtCertDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 
 func nodemgtSubList(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	st := nodemgtST()
+	if err := st.HideRelaySubscriptions(); err != nil {
+		return nil, nodemgtErr(err)
+	}
 	users, err := st.ListUsers("")
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
 	byUser := map[string]models.NodeUser{}
 	for _, user := range users {
+		if models.IsRelayUser(user.Kind, user.Username) {
+			continue
+		}
 		byUser[user.ID] = user
 		if _, err := st.EnsureSubscription(user.ID); err != nil {
 			return nil, nodemgtErr(err)
@@ -1738,6 +1744,10 @@ func nodemgtSubList(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpc
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
+		user, ok := byUser[row.UserID]
+		if !ok {
+			continue
+		}
 		item := map[string]any{
 			"id":          row.ID,
 			"user_id":     row.UserID,
@@ -1750,9 +1760,7 @@ func nodemgtSubList(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpc
 			"updated_at":  row.UpdatedAt,
 			"path":        subhttp.NormalizePath(cfg.Path) + row.Token,
 			"url":         subhttp.PublicURL(cfg, row.Token),
-		}
-		if user, ok := byUser[row.UserID]; ok {
-			item["username"] = user.Username
+			"username":    user.Username,
 		}
 		out = append(out, item)
 	}

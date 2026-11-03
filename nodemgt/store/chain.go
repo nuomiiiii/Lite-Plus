@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	relayUsernamePrefix   = "__relay__"
+	relayUsernamePrefix   = models.RelayUsernamePrefix
 	chainStrategyNone     = "none"
 	chainStrategyFailover = "failover"
 	chainStrategyURLTest  = "urltest"
@@ -1071,34 +1071,66 @@ func (s *Store) rebuildChainHops(chain *models.ForwardChain) ([]string, error) {
 }
 
 func (s *Store) ensureRelayUser(landing *models.Inbound) (*models.NodeUser, error) {
-	if user, err := s.relayUserForInbound(landing.ID); err == nil {
-		if err := s.EnsureGrant(user.ID, landing.ID); err != nil {
+	user, err := s.sharedRelayUser()
+	if err != nil && !isNotFound(err) {
+		return nil, err
+	}
+	if isNotFound(err) {
+		user = &models.NodeUser{
+			Username:    relayUsernamePrefix,
+			DisplayName: "relay",
+			Kind:        models.UserKindRelay,
+			Status:      models.UserActive,
+		}
+		if err := s.UpsertUser(user); err != nil {
 			return nil, err
 		}
-		return user, nil
-	} else if !isNotFound(err) {
-		return nil, err
-	}
-	user := &models.NodeUser{
-		NodeUUID:    landing.NodeUUID,
-		Username:    relayUsernamePrefix + landing.ID,
-		DisplayName: strings.TrimSpace(landing.Name),
-		Kind:        models.UserKindRelay,
-		Status:      models.UserActive,
-	}
-	if user.DisplayName == "" {
-		user.DisplayName = "relay"
-	}
-	if err := s.UpsertUser(user); err != nil {
-		return nil, err
-	}
-	if _, _, err := s.IssueCredential(user.ID, "uuid", "", nil); err != nil {
-		return nil, err
+		if _, _, err := s.IssueCredential(user.ID, "uuid", "", nil); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.EnsureGrant(user.ID, landing.ID); err != nil {
 		return nil, err
 	}
+	if err := s.HideRelaySubscriptions(); err != nil {
+		return nil, err
+	}
 	return user, nil
+}
+
+func (s *Store) sharedRelayUser() (*models.NodeUser, error) {
+	var users []models.NodeUser
+	if err := s.db.Where("kind = ? OR username LIKE ?", models.UserKindRelay, relayUsernamePrefix+"%").Order("created_at ASC").Find(&users).Error; err != nil {
+		return nil, err
+	}
+	if len(users) == 0 {
+		return nil, ErrNotFound
+	}
+	keeper := users[0]
+	for i := range users {
+		if users[i].Username == relayUsernamePrefix {
+			keeper = users[i]
+			break
+		}
+	}
+	for i := range users {
+		if users[i].ID == keeper.ID {
+			continue
+		}
+		var grants []models.Grant
+		if err := s.db.Where("user_id = ?", users[i].ID).Find(&grants).Error; err != nil {
+			return nil, err
+		}
+		for _, grant := range grants {
+			if err := s.EnsureGrant(keeper.ID, grant.InboundID); err != nil {
+				return nil, err
+			}
+		}
+		if err := s.DeleteUser(users[i].ID); err != nil {
+			return nil, err
+		}
+	}
+	return &keeper, nil
 }
 
 func (s *Store) relayUserForInbound(inboundID string) (*models.NodeUser, error) {

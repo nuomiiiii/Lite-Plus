@@ -9,7 +9,7 @@ import (
 )
 
 func ForUser(st *store.Store, user models.NodeUser) ([]Node, error) {
-	if strings.EqualFold(strings.TrimSpace(user.Kind), models.UserKindRelay) {
+	if models.IsRelayUser(user.Kind, user.Username) {
 		return nil, nil
 	}
 	grants, err := st.ListGrants(user.ID)

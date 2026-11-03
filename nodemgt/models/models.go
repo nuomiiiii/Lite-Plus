@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	CoreXray    = "xray"
@@ -9,7 +12,8 @@ const (
 	UserActive   = "active"
 	UserDisabled = "disabled"
 	UserExpired  = "expired"
-	UserKindRelay = "relay"
+	UserKindRelay     = "relay"
+	RelayUsernamePrefix = "__relay__"
 
 	CmdPending    = "pending"
 	CmdSent       = "sent"
@@ -144,6 +148,13 @@ type NodeUser struct {
 }
 
 func (NodeUser) TableName() string { return "nodemgt_node_users" }
+
+func IsRelayUser(kind, username string) bool {
+	if strings.EqualFold(strings.TrimSpace(kind), UserKindRelay) {
+		return true
+	}
+	return strings.HasPrefix(strings.TrimSpace(username), RelayUsernamePrefix)
+}
 
 type Credential struct {
 	ID             string     `json:"id" gorm:"type:varchar(36);primaryKey"`

@@ -58,6 +58,7 @@ func TestForwardChainManyToOne(t *testing.T) {
 	relay, err := st.relayUserForInbound(landing.ID)
 	require.NoError(t, err)
 	require.Equal(t, models.UserKindRelay, relay.Kind)
+	require.Equal(t, models.RelayUsernamePrefix, relay.Username)
 
 	outbounds, err := st.ListOutbounds("")
 	require.NoError(t, err)
@@ -69,6 +70,40 @@ func TestForwardChainManyToOne(t *testing.T) {
 		require.True(t, settingsFlag(row.SettingsJSON, "chain_managed"))
 		require.Equal(t, "land.example.com", settingsString(row.SettingsJSON, "address"))
 		require.Equal(t, landing.ID, settingsString(row.SettingsJSON, "landing_inbound_id"))
+	}
+}
+
+func TestForwardChainSharesOneRelayUser(t *testing.T) {
+	st := testDB(t)
+	landA := testInbound("land-a", "US-A", "vless", "a.example.com", 443)
+	landB := testInbound("land-b", "US-B", "vless", "b.example.com", 443)
+	front := testInbound("front", "HK", "vless", "hk.example.com", 8443)
+	require.NoError(t, st.UpsertInbound(landA))
+	require.NoError(t, st.UpsertInbound(landB))
+	require.NoError(t, st.UpsertInbound(front))
+	_, _, err := st.UpsertChain(ChainUpsert{
+		Strategy:          chainStrategyURLTest,
+		LandingInboundIDs: []string{landA.ID, landB.ID},
+		SourceInboundIDs:  []string{front.ID},
+	})
+	require.NoError(t, err)
+	a, err := st.relayUserForInbound(landA.ID)
+	require.NoError(t, err)
+	b, err := st.relayUserForInbound(landB.ID)
+	require.NoError(t, err)
+	require.Equal(t, a.ID, b.ID)
+	require.Equal(t, models.RelayUsernamePrefix, a.Username)
+	views, err := st.ListUserViews("")
+	require.NoError(t, err)
+	require.Empty(t, views)
+	_, err = st.EnsureSubscription(a.ID)
+	require.Error(t, err)
+	require.NoError(t, st.UpsertSubscription(&models.Subscription{UserID: a.ID, Format: "xray", Enabled: true}))
+	require.NoError(t, st.HideRelaySubscriptions())
+	subs, err := st.ListSubscriptions()
+	require.NoError(t, err)
+	for _, row := range subs {
+		require.NotEqual(t, a.ID, row.UserID)
 	}
 }
 

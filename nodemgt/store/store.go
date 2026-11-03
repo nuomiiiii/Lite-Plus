@@ -745,7 +745,7 @@ func (s *Store) userViews(users []models.NodeUser) ([]UserView, error) {
 	}
 	out := make([]UserView, 0, len(users))
 	for _, user := range users {
-		if strings.EqualFold(strings.TrimSpace(user.Kind), models.UserKindRelay) {
+		if models.IsRelayUser(user.Kind, user.Username) {
 			continue
 		}
 		view := UserView{NodeUser: user, InboundIDs: []string{}, InboundNames: []string{}, ExtraLinks: extras[user.ID]}
@@ -1263,9 +1263,34 @@ func (s *Store) GetSubscriptionByUser(userID string) (*models.Subscription, erro
 	return &row, nil
 }
 
+func (s *Store) HideRelaySubscriptions() error {
+	var users []models.NodeUser
+	if err := s.db.Where("kind = ? OR username LIKE ?", models.UserKindRelay, models.RelayUsernamePrefix+"%").Find(&users).Error; err != nil {
+		return err
+	}
+	if len(users) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(users))
+	for _, user := range users {
+		ids = append(ids, user.ID)
+	}
+	return s.db.Where("user_id IN ?", ids).Delete(&models.Subscription{}).Error
+}
+
 func (s *Store) EnsureSubscription(userID string) (*models.Subscription, error) {
 	if userID == "" {
 		return nil, fmt.Errorf("%w: user required", ErrInvalid)
+	}
+	user, err := s.GetUser(userID)
+	if err != nil {
+		return nil, err
+	}
+	if models.IsRelayUser(user.Kind, user.Username) {
+		if err := s.HideRelaySubscriptions(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: relay user", ErrInvalid)
 	}
 	if row, err := s.GetSubscriptionByUser(userID); err == nil {
 		return row, nil
