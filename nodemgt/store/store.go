@@ -246,6 +246,9 @@ func (s *Store) DeleteInbound(id string) error {
 		if n == 0 {
 			return ErrNotFound
 		}
+		if _, err := detachInboundChainsTx(tx, id); err != nil {
+			return err
+		}
 		if err := tx.Where("inbound_id = ?", id).Delete(&models.Grant{}).Error; err != nil {
 			return err
 		}
@@ -282,6 +285,13 @@ func (s *Store) UpsertOutbound(row *models.Outbound) error {
 	}
 	if reservedOutboundTag(row.Name) {
 		return fmt.Errorf("%w: outbound_tag_reserved", ErrInvalid)
+	}
+	if !settingsFlag(row.SettingsJSON, "chain_managed") {
+		for _, key := range []string{"source_inbound_id", "landing_inbound_id"} {
+			if id := settingsString(row.SettingsJSON, key); id != "" && s.InboundBoundToChain(id) {
+				return fmt.Errorf("%w: chain_in_use", ErrConflict)
+			}
+		}
 	}
 	q := s.db.Model(&models.Outbound{}).Where("node_uuid = ? AND name = ?", row.NodeUUID, row.Name)
 	if strings.TrimSpace(row.ID) != "" {
@@ -320,6 +330,14 @@ func (s *Store) GetOutbound(id string) (*models.Outbound, error) {
 	return &row, nil
 }
 
+func routeRuleInboundID(ruleJSON string) string {
+	var rule struct {
+		InboundID string `json:"inbound_id"`
+	}
+	_ = json.Unmarshal([]byte(ruleJSON), &rule)
+	return strings.TrimSpace(rule.InboundID)
+}
+
 func routeRuleOutboundID(ruleJSON string) string {
 	var rule struct {
 		OutboundID string `json:"outbound_id"`
@@ -332,6 +350,9 @@ func (s *Store) DeleteOutbound(id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return ErrInvalid
+	}
+	if s.ChainManagedOutbound(id) {
+		return fmt.Errorf("%w: chain_managed", ErrConflict)
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		res := tx.Delete(&models.Outbound{}, "id = ?", id)
@@ -367,6 +388,11 @@ func (s *Store) ListRoutes(nodeUUID string) ([]models.Route, error) {
 }
 
 func (s *Store) UpsertRoute(row *models.Route) error {
+	if !settingsFlag(row.RuleJSON, "chain_managed") {
+		if id := routeRuleInboundID(row.RuleJSON); id != "" && s.InboundBoundToChain(id) {
+			return fmt.Errorf("%w: chain_in_use", ErrConflict)
+		}
+	}
 	if row.ID == "" {
 		row.ID = newID()
 	}
@@ -391,6 +417,9 @@ func (s *Store) GetRoute(id string) (*models.Route, error) {
 }
 
 func (s *Store) DeleteRoute(id string) error {
+	if s.ChainManagedRoute(id) {
+		return fmt.Errorf("%w: chain_managed", ErrConflict)
+	}
 	res := s.db.Delete(&models.Route{}, "id = ?", id)
 	if res.Error != nil {
 		return res.Error
@@ -464,6 +493,9 @@ func (s *Store) SaveUserProfile(row *models.NodeUser) error {
 		"rate_limit_bps": row.RateLimitBps,
 		"device_limit":   row.DeviceLimit,
 		"updated_at":     now(),
+	}
+	if strings.TrimSpace(row.Kind) != "" {
+		updates["kind"] = row.Kind
 	}
 	if strings.TrimSpace(row.Status) != "" {
 		updates["status"] = row.Status
@@ -713,6 +745,9 @@ func (s *Store) userViews(users []models.NodeUser) ([]UserView, error) {
 	}
 	out := make([]UserView, 0, len(users))
 	for _, user := range users {
+		if strings.EqualFold(strings.TrimSpace(user.Kind), models.UserKindRelay) {
+			continue
+		}
 		view := UserView{NodeUser: user, InboundIDs: []string{}, InboundNames: []string{}, ExtraLinks: extras[user.ID]}
 		if view.ExtraLinks == nil {
 			view.ExtraLinks = []models.UserExtraLink{}

@@ -9,6 +9,7 @@ const (
 	UserActive   = "active"
 	UserDisabled = "disabled"
 	UserExpired  = "expired"
+	UserKindRelay = "relay"
 
 	CmdPending    = "pending"
 	CmdSent       = "sent"
@@ -73,6 +74,44 @@ type Route struct {
 
 func (Route) TableName() string { return "nodemgt_routes" }
 
+type ForwardChain struct {
+	ID             string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	Name           string    `json:"name" gorm:"type:varchar(100);not null"`
+	Strategy       string    `json:"strategy" gorm:"type:varchar(16);not null;default:'none'"`
+	BackupDirect   bool      `json:"backup_direct" gorm:"not null;default:false"`
+	FallbackDirect bool      `json:"fallback_direct" gorm:"not null;default:false"`
+	Enabled        bool      `json:"enabled" gorm:"not null;default:true"`
+	Revision       uint64    `json:"revision" gorm:"not null;default:0"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (ForwardChain) TableName() string { return "nodemgt_forward_chains" }
+
+type ForwardLanding struct {
+	ID               string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	ChainID          string    `json:"chain_id" gorm:"type:varchar(36);index;not null"`
+	LandingInboundID string    `json:"landing_inbound_id" gorm:"type:varchar(36);index;not null"`
+	SortIndex        int       `json:"sort_index" gorm:"not null;default:0"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+func (ForwardLanding) TableName() string { return "nodemgt_forward_landings" }
+
+type ForwardLink struct {
+	ID              string    `json:"id" gorm:"type:varchar(36);primaryKey"`
+	ChainID         string    `json:"chain_id" gorm:"type:varchar(36);index;not null"`
+	SourceInboundID string    `json:"source_inbound_id" gorm:"type:varchar(36);uniqueIndex;not null"`
+	OutboundID      string    `json:"outbound_id" gorm:"type:varchar(36);index"`
+	RouteID         string    `json:"route_id" gorm:"type:varchar(36);index"`
+	SortIndex       int       `json:"sort_index" gorm:"not null;default:0"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+func (ForwardLink) TableName() string { return "nodemgt_forward_links" }
+
 type Grant struct {
 	ID        string    `json:"id" gorm:"type:varchar(36);primaryKey"`
 	UserID    string    `json:"user_id" gorm:"type:varchar(36);index;not null"`
@@ -87,6 +126,7 @@ type NodeUser struct {
 	NodeUUID          string     `json:"node_uuid" gorm:"type:varchar(36);index;not null"`
 	Username          string     `json:"username" gorm:"type:varchar(100);not null"`
 	DisplayName       string     `json:"display_name" gorm:"type:varchar(100)"`
+	Kind              string     `json:"kind" gorm:"type:varchar(16);not null;default:''"`
 	Status            string     `json:"status" gorm:"type:varchar(16);not null;default:'active'"`
 	ExpiresAt         *time.Time `json:"expires_at"`
 	TrafficResetDay   int        `json:"traffic_reset_day" gorm:"not null;default:0"`
@@ -336,6 +376,9 @@ func All() []any {
 		&Inbound{},
 		&Outbound{},
 		&Route{},
+		&ForwardChain{},
+		&ForwardLanding{},
+		&ForwardLink{},
 		&Grant{},
 		&NodeUser{},
 		&Credential{},

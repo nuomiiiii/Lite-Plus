@@ -39,6 +39,9 @@ func init() {
 	reg("nodemgt.route.list", nodemgtRouteList, "List nodemgt routes")
 	reg("nodemgt.route.upsert", nodemgtRouteUpsert, "Create or update a nodemgt route")
 	reg("nodemgt.route.delete", nodemgtRouteDelete, "Delete a nodemgt route")
+	reg("nodemgt.chain.list", nodemgtChainList, "List nodemgt forward chains")
+	reg("nodemgt.chain.upsert", nodemgtChainUpsert, "Create or update a nodemgt forward chain")
+	reg("nodemgt.chain.delete", nodemgtChainDelete, "Delete a nodemgt forward chain")
 	reg("nodemgt.user.list", nodemgtUserList, "List node users")
 	reg("nodemgt.user.upsert", nodemgtUserUpsert, "Create or update a node user")
 	reg("nodemgt.user.delete", nodemgtUserDelete, "Delete a node user")
@@ -213,53 +216,53 @@ func nodemgtInboundList(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.J
 }
 
 type inboundUpsertParams struct {
-	ID                 string `json:"id"`
-	NodeUUID           string `json:"node_uuid"`
-	Core               string `json:"core"`
-	Name               string `json:"name"`
-	Protocol           string `json:"protocol"`
-	Listen             string `json:"listen"`
-	Port               int    `json:"port"`
-	Enabled            *bool  `json:"enabled"`
-	Stack              string `json:"stack"`
-	PublicHost         string `json:"public_host"`
-	PublicPort         *int   `json:"public_port"`
-	Flow               string `json:"flow"`
-	Transport          string `json:"transport"`
-	Security           string `json:"security"`
-	SNI                string `json:"sni"`
-	TLSDomain          string `json:"tls_domain"`
-	ALPN               string `json:"alpn"`
-	CertID             string `json:"cert_id"`
-	RealityDest        string `json:"reality_dest"`
-	RealityServerNames string `json:"reality_server_names"`
-	RealityPrivateKey  string `json:"reality_private_key"`
-	RealityShortID     string `json:"reality_short_id"`
-	RealityPublicKey   string `json:"reality_public_key"`
-	WSPath             string `json:"ws_path"`
-	WSHost             string `json:"ws_host"`
-	GRPCService        string `json:"grpc_service"`
-	GRPCMulti          *bool  `json:"grpc_multi"`
-	HTTPPath           string `json:"http_path"`
-	HTTPHost           string `json:"http_host"`
-	HTTPMode           string `json:"http_mode"`
-	TCPHeader          string `json:"tcp_header"`
-	TCPHost            string `json:"tcp_host"`
-	SSMethod           string `json:"ss_method"`
-	UDPFragment        *bool  `json:"udp_fragment"`
+	ID                 string                    `json:"id"`
+	NodeUUID           string                    `json:"node_uuid"`
+	Core               string                    `json:"core"`
+	Name               string                    `json:"name"`
+	Protocol           string                    `json:"protocol"`
+	Listen             string                    `json:"listen"`
+	Port               int                       `json:"port"`
+	Enabled            *bool                     `json:"enabled"`
+	Stack              string                    `json:"stack"`
+	PublicHost         string                    `json:"public_host"`
+	PublicPort         *int                      `json:"public_port"`
+	Flow               string                    `json:"flow"`
+	Transport          string                    `json:"transport"`
+	Security           string                    `json:"security"`
+	SNI                string                    `json:"sni"`
+	TLSDomain          string                    `json:"tls_domain"`
+	ALPN               string                    `json:"alpn"`
+	CertID             string                    `json:"cert_id"`
+	RealityDest        string                    `json:"reality_dest"`
+	RealityServerNames string                    `json:"reality_server_names"`
+	RealityPrivateKey  string                    `json:"reality_private_key"`
+	RealityShortID     string                    `json:"reality_short_id"`
+	RealityPublicKey   string                    `json:"reality_public_key"`
+	WSPath             string                    `json:"ws_path"`
+	WSHost             string                    `json:"ws_host"`
+	GRPCService        string                    `json:"grpc_service"`
+	GRPCMulti          *bool                     `json:"grpc_multi"`
+	HTTPPath           string                    `json:"http_path"`
+	HTTPHost           string                    `json:"http_host"`
+	HTTPMode           string                    `json:"http_mode"`
+	TCPHeader          string                    `json:"tcp_header"`
+	TCPHost            string                    `json:"tcp_host"`
+	SSMethod           string                    `json:"ss_method"`
+	UDPFragment        *bool                     `json:"udp_fragment"`
 	Accounts           []inboundcfg.ProxyAccount `json:"accounts"`
 	AllowTransparent   *bool                     `json:"allow_transparent"`
-	Fingerprint        string `json:"fingerprint"`
-	SpiderX            string `json:"spider_x"`
-	Sniffing           *bool  `json:"sniffing"`
-	DestOverride       string `json:"dest_override"`
-	RouteOnly          *bool  `json:"route_only"`
-	SortIndex          *int   `json:"sort_index"`
-	ExcludeFromSub     *bool  `json:"exclude_from_sub"`
-	ShareStrategy      string `json:"share_strategy"`
-	FirewallAllow      *bool  `json:"firewall_allow"`
-	Grant              string `json:"grant"`
-	PageID             string `json:"page_id"`
+	Fingerprint        string                    `json:"fingerprint"`
+	SpiderX            string                    `json:"spider_x"`
+	Sniffing           *bool                     `json:"sniffing"`
+	DestOverride       string                    `json:"dest_override"`
+	RouteOnly          *bool                     `json:"route_only"`
+	SortIndex          *int                      `json:"sort_index"`
+	ExcludeFromSub     *bool                     `json:"exclude_from_sub"`
+	ShareStrategy      string                    `json:"share_strategy"`
+	FirewallAllow      *bool                     `json:"firewall_allow"`
+	Grant              string                    `json:"grant"`
+	PageID             string                    `json:"page_id"`
 }
 
 const defaultRealityDest = "addons.mozilla.org:443"
@@ -564,7 +567,11 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 			return nil, nodemgtErr(err)
 		}
 	}
-	nodemgtPush(st, row.NodeUUID)
+	chainNodes, syncErr := st.SyncChainsForLanding(row.ID)
+	if syncErr != nil {
+		return nil, nodemgtErr(syncErr)
+	}
+	nodemgtPushNodes(st, append([]string{row.NodeUUID}, chainNodes...)...)
 	view := inboundView(row)
 	if grantMeta != nil {
 		return grantPayload(grantMeta.Principal.UserUUID, grantMeta.SessionToken, p.PageID, expires, grantEpoch, view), nil
@@ -668,11 +675,15 @@ func nodemgtInboundDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 			}
 		}
 	}
+	chainNodes, err := st.DetachInboundChains(p.ID)
+	if err != nil {
+		return nil, nodemgtErr(err)
+	}
 	if err := st.DeleteInbound(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
 	_ = st.Audit(nodemgtActor(ctx), "nodemgt.inbound.delete", p.ID, row.Name)
-	nodemgtPush(st, row.NodeUUID)
+	nodemgtPushNodes(st, append([]string{row.NodeUUID}, chainNodes...)...)
 	out := map[string]any{"ok": true}
 	if grantMeta != nil {
 		return grantPayload(grantMeta.Principal.UserUUID, grantMeta.SessionToken, p.PageID, expires, grantEpoch, out), nil
@@ -785,6 +796,7 @@ func outboundView(row models.Outbound) map[string]any {
 		"reality_short_id":   s.RealityShortID,
 		"spider_x":           s.SpiderX,
 		"source_inbound_id":  s.SourceInboundID,
+		"chain_managed":      settingsFlagJSON(row.SettingsJSON, "chain_managed"),
 		"settings_json":      row.SettingsJSON,
 	}
 }
@@ -921,23 +933,24 @@ func routeView(row models.Route) map[string]any {
 	}
 	_ = json.Unmarshal([]byte(row.RuleJSON), &s)
 	return map[string]any{
-		"id":          row.ID,
-		"node_uuid":   row.NodeUUID,
-		"name":        row.Name,
-		"priority":    row.Priority,
-		"enabled":     row.Enabled,
-		"revision":    row.Revision,
-		"created_at":  row.CreatedAt,
-		"updated_at":  row.UpdatedAt,
-		"inbound_id":  s.InboundID,
-		"outbound_id": s.OutboundID,
-		"domain":      s.Domain,
-		"ip":          s.IP,
-		"network":     s.Network,
-		"protocol":    s.Protocol,
-		"port":        s.Port,
-		"source":      s.Source,
-		"rule_json":   row.RuleJSON,
+		"id":            row.ID,
+		"node_uuid":     row.NodeUUID,
+		"name":          row.Name,
+		"priority":      row.Priority,
+		"enabled":       row.Enabled,
+		"revision":      row.Revision,
+		"created_at":    row.CreatedAt,
+		"updated_at":    row.UpdatedAt,
+		"inbound_id":    s.InboundID,
+		"outbound_id":   s.OutboundID,
+		"domain":        s.Domain,
+		"ip":            s.IP,
+		"network":       s.Network,
+		"protocol":      s.Protocol,
+		"port":          s.Port,
+		"source":        s.Source,
+		"chain_managed": settingsFlagJSON(row.RuleJSON, "chain_managed"),
+		"rule_json":     row.RuleJSON,
 	}
 }
 
@@ -2106,4 +2119,19 @@ func nodemgtNodeUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	_ = st.Audit(nodemgtActor(ctx), "nodemgt.node.upsert", p.NodeUUID, row.DialStack)
 	nodemgtPush(st, p.NodeUUID)
 	return row, nil
+}
+
+func settingsFlagJSON(raw, key string) bool {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return false
+	}
+	switch v := m[key].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(v, "true") || v == "1"
+	default:
+		return false
+	}
 }

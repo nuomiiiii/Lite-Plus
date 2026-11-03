@@ -38,6 +38,11 @@ func deleteNodeTx(tx *gorm.DB, nodeUUID string) error {
 		return err
 	}
 	if len(inboundIDs) > 0 {
+		for _, inboundID := range inboundIDs {
+			if _, err := detachInboundChainsTx(tx, inboundID); err != nil {
+				return err
+			}
+		}
 		if err := deleteWhere(tx, &models.Grant{}, "inbound_id IN ?", inboundIDs); err != nil {
 			return err
 		}
