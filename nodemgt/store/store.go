@@ -286,7 +286,7 @@ func (s *Store) UpsertOutbound(row *models.Outbound) error {
 	if reservedOutboundTag(row.Name) {
 		return fmt.Errorf("%w: outbound_tag_reserved", ErrInvalid)
 	}
-	if !settingsFlag(row.SettingsJSON, "chain_managed") {
+	if !settingsFlag(row.SettingsJSON, "chain_managed") && !settingsFlag(row.SettingsJSON, "route_managed") {
 		for _, key := range []string{"source_inbound_id", "landing_inbound_id"} {
 			if id := settingsString(row.SettingsJSON, key); id != "" && s.InboundBoundToChain(id) {
 				return fmt.Errorf("%w: chain_in_use", ErrConflict)
@@ -351,10 +351,11 @@ func (s *Store) DeleteOutbound(id string) error {
 	if id == "" {
 		return ErrInvalid
 	}
-	if s.ChainManagedOutbound(id) {
+	if s.ChainManagedOutbound(id) || s.RouteManagedOutbound(id) {
 		return fmt.Errorf("%w: chain_managed", ErrConflict)
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		st := New(tx)
 		res := tx.Delete(&models.Outbound{}, "id = ?", id)
 		if res.Error != nil {
 			return res.Error
@@ -362,19 +363,7 @@ func (s *Store) DeleteOutbound(id string) error {
 		if res.RowsAffected == 0 {
 			return ErrNotFound
 		}
-		var routes []models.Route
-		if err := tx.Find(&routes).Error; err != nil {
-			return err
-		}
-		for _, row := range routes {
-			if routeRuleOutboundID(row.RuleJSON) != id {
-				continue
-			}
-			if err := tx.Delete(&models.Route{}, "id = ?", row.ID).Error; err != nil {
-				return err
-			}
-		}
-		return nil
+		return st.deleteRoutesUsingOutbound(id)
 	})
 }
 
@@ -420,14 +409,22 @@ func (s *Store) DeleteRoute(id string) error {
 	if s.ChainManagedRoute(id) {
 		return fmt.Errorf("%w: chain_managed", ErrConflict)
 	}
-	res := s.db.Delete(&models.Route{}, "id = ?", id)
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		st := New(tx)
+		row, err := st.GetRoute(id)
+		if err != nil {
+			return err
+		}
+		groupID := settingsString(row.RuleJSON, "group_outbound_id")
+		res := tx.Delete(&models.Route{}, "id = ?", id)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return st.dropRouteGroup(groupID)
+	})
 }
 
 func (s *Store) ListUsers(nodeUUID string) ([]models.NodeUser, error) {

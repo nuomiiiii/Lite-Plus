@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/nuomiiiii/lite/nodemgt/cert"
@@ -180,8 +182,25 @@ func (s *Store) UpsertChain(in ChainUpsert) (*ChainView, []string, error) {
 		}
 	}
 
-	var affected []string
+	var before map[string]string
+	if existing != nil {
+		fps, err := s.chainNodeFingerprints(existing.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		before = fps
+	}
+	hadGrant := map[string]bool{}
+	for _, landing := range landingRows {
+		ok, err := s.relayGrantExists(landing.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		hadGrant[landing.ID] = ok
+	}
+
 	chainID := strings.TrimSpace(in.ID)
+	var extraLandingNodes []string
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		st := New(tx)
 		fallbackDirect := false
@@ -232,10 +251,20 @@ func (s *Store) UpsertChain(in ChainUpsert) (*ChainView, []string, error) {
 			return err
 		}
 		for i := range landingRows {
-			if _, err := st.ensureRelayUser(&landingRows[i]); err != nil {
+			_, extraInbounds, err := st.ensureRelayUser(&landingRows[i])
+			if err != nil {
 				return err
 			}
-			affected = append(affected, landingRows[i].NodeUUID)
+			for _, inboundID := range extraInbounds {
+				inb, err := st.GetInbound(inboundID)
+				if err != nil {
+					if isNotFound(err) {
+						continue
+					}
+					return err
+				}
+				extraLandingNodes = append(extraLandingNodes, inb.NodeUUID)
+			}
 		}
 		keep := map[string]struct{}{}
 		byNode := map[string][]models.Inbound{}
@@ -254,24 +283,26 @@ func (s *Store) UpsertChain(in ChainUpsert) (*ChainView, []string, error) {
 					return err
 				}
 				keep[link.SourceInboundID] = struct{}{}
-				affected = append(affected, source.NodeUUID)
 			}
 		}
-		dropped, err := st.dropUnkeptLinks(chain.ID, keep)
-		if err != nil {
+		if _, err := st.dropUnkeptLinks(chain.ID, keep); err != nil {
 			return err
 		}
-		affected = append(affected, dropped...)
 		return st.dropUnusedManagedOutbounds(chain.ID)
 	})
 	if err != nil {
 		return nil, nil, err
 	}
+	affected, err := s.changedChainNodes(chainID, before, landingRows, hadGrant)
+	if err != nil {
+		return nil, nil, err
+	}
+	affected = uniqueIDs(append(affected, extraLandingNodes...))
 	view, err := s.GetChainView(chainID)
 	if err != nil {
-		return nil, uniqueIDs(affected), err
+		return nil, affected, err
 	}
-	return view, uniqueIDs(affected), nil
+	return view, affected, nil
 }
 
 func (s *Store) DeleteChain(id string) ([]string, error) {
@@ -705,6 +736,9 @@ func (s *Store) upsertHopOutbound(chain *models.ForwardChain, landing *models.In
 		row.ID = existing.ID
 		row.CreatedAt = existing.CreatedAt
 		row.Name = existing.Name
+		if outboundConfigEqual(existing, row) {
+			return existing, nil
+		}
 	} else if err != nil && !isNotFound(err) {
 		return nil, err
 	}
@@ -741,6 +775,9 @@ func (s *Store) upsertGroupOutbound(chain *models.ForwardChain, nodeUUID, core s
 		row.ID = existing.ID
 		row.CreatedAt = existing.CreatedAt
 		row.Name = existing.Name
+		if outboundConfigEqual(existing, row) {
+			return existing, nil
+		}
 	} else if !isNotFound(err) {
 		return nil, err
 	}
@@ -846,6 +883,9 @@ func (s *Store) upsertManagedRoute(chain *models.ForwardChain, source *models.In
 		row.CreatedAt = existing.CreatedAt
 		row.Name = existing.Name
 		row.Priority = existing.Priority
+		if routeConfigEqual(existing, row) {
+			return existing, nil
+		}
 	} else if !isNotFound(err) {
 		return nil, err
 	}
@@ -1027,6 +1067,10 @@ func detachInboundChainsTx(tx *gorm.DB, inboundID string) ([]string, error) {
 }
 
 func (s *Store) rebuildChainHops(chain *models.ForwardChain) ([]string, error) {
+	before, err := s.chainNodeFingerprints(chain.ID)
+	if err != nil {
+		return nil, err
+	}
 	view, err := s.chainView(*chain)
 	if err != nil {
 		return nil, err
@@ -1040,40 +1084,45 @@ func (s *Store) rebuildChainHops(chain *models.ForwardChain) ([]string, error) {
 		landingRows = append(landingRows, *landing)
 	}
 	byNode := map[string][]models.Inbound{}
-	var affected []string
 	for _, hop := range view.Sources {
 		source, err := s.GetInbound(hop.SourceInboundID)
 		if err != nil {
-			return affected, err
+			return nil, err
 		}
 		byNode[source.NodeUUID] = append(byNode[source.NodeUUID], *source)
-		affected = append(affected, source.NodeUUID)
 	}
 	keep := map[string]struct{}{}
 	for nodeUUID, nodeSources := range byNode {
 		group, err := s.materializeNodeHops(chain, landingRows, nodeUUID, nodeSources[0].Core)
 		if err != nil {
-			return affected, err
+			return nil, err
 		}
 		for i := range nodeSources {
 			src := nodeSources[i]
 			link, err := s.materializeLink(chain, &src, group, i)
 			if err != nil {
-				return affected, err
+				return nil, err
 			}
 			keep[link.SourceInboundID] = struct{}{}
 		}
 	}
 	if _, err := s.dropUnkeptLinks(chain.ID, keep); err != nil {
-		return affected, err
+		return nil, err
 	}
-	return affected, s.dropUnusedManagedOutbounds(chain.ID)
+	if err := s.dropUnusedManagedOutbounds(chain.ID); err != nil {
+		return nil, err
+	}
+	after, err := s.chainNodeFingerprints(chain.ID)
+	if err != nil {
+		return nil, err
+	}
+	return diffNodeFingerprints(before, after), nil
 }
 
-func (s *Store) ensureRelayUser(landing *models.Inbound) (*models.NodeUser, error) {
-	user, err := s.sharedRelayUser()
+func (s *Store) ensureRelayUser(landing *models.Inbound) (*models.NodeUser, []string, error) {
+	user, extraInbounds, err := s.sharedRelayUser()
 	if err != nil && !isNotFound(err) {
-		return nil, err
+		return nil, nil, err
 	}
 	if isNotFound(err) {
 		user = &models.NodeUser{
@@ -1083,28 +1132,29 @@ func (s *Store) ensureRelayUser(landing *models.Inbound) (*models.NodeUser, erro
 			Status:      models.UserActive,
 		}
 		if err := s.UpsertUser(user); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if _, _, err := s.IssueCredential(user.ID, "uuid", "", nil); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		extraInbounds = nil
 	}
 	if err := s.EnsureGrant(user.ID, landing.ID); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.HideRelaySubscriptions(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return user, nil
+	return user, extraInbounds, nil
 }
 
-func (s *Store) sharedRelayUser() (*models.NodeUser, error) {
+func (s *Store) sharedRelayUser() (*models.NodeUser, []string, error) {
 	var users []models.NodeUser
 	if err := s.db.Where("kind = ? OR username LIKE ?", models.UserKindRelay, relayUsernamePrefix+"%").Order("created_at ASC").Find(&users).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(users) == 0 {
-		return nil, ErrNotFound
+		return nil, nil, ErrNotFound
 	}
 	keeper := users[0]
 	for i := range users {
@@ -1113,24 +1163,26 @@ func (s *Store) sharedRelayUser() (*models.NodeUser, error) {
 			break
 		}
 	}
+	var extraInbounds []string
 	for i := range users {
 		if users[i].ID == keeper.ID {
 			continue
 		}
 		var grants []models.Grant
 		if err := s.db.Where("user_id = ?", users[i].ID).Find(&grants).Error; err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, grant := range grants {
+			extraInbounds = append(extraInbounds, grant.InboundID)
 			if err := s.EnsureGrant(keeper.ID, grant.InboundID); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		if err := s.DeleteUser(users[i].ID); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return &keeper, nil
+	return &keeper, uniqueIDs(extraInbounds), nil
 }
 
 func (s *Store) relayUserForInbound(inboundID string) (*models.NodeUser, error) {
@@ -1177,7 +1229,7 @@ func (s *Store) outboundSettingsFromLanding(chainID string, landing *models.Inbo
 	if !ok {
 		return "", fmt.Errorf("%w: chain_no_address", ErrInvalid)
 	}
-	user, err := s.ensureRelayUser(landing)
+	user, _, err := s.ensureRelayUser(landing)
 	if err != nil {
 		return "", err
 	}
@@ -1493,6 +1545,164 @@ func settingsString(raw, key string) string {
 	}
 	v, _ := m[key].(string)
 	return strings.TrimSpace(v)
+}
+
+func (s *Store) changedChainNodes(chainID string, before map[string]string, landings []models.Inbound, hadGrant map[string]bool) ([]string, error) {
+	after, err := s.chainNodeFingerprints(chainID)
+	if err != nil {
+		return nil, err
+	}
+	affected := diffNodeFingerprints(before, after)
+	for _, landing := range landings {
+		if hadGrant[landing.ID] {
+			continue
+		}
+		ok, err := s.relayGrantExists(landing.ID)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			affected = append(affected, landing.NodeUUID)
+		}
+	}
+	return uniqueIDs(affected), nil
+}
+
+func (s *Store) chainNodeFingerprints(chainID string) (map[string]string, error) {
+	chainID = strings.TrimSpace(chainID)
+	parts := map[string][]string{}
+	if chainID == "" {
+		return map[string]string{}, nil
+	}
+	var outs []models.Outbound
+	if err := s.db.Find(&outs).Error; err != nil {
+		return nil, err
+	}
+	for i := range outs {
+		row := outs[i]
+		if settingsString(row.SettingsJSON, "chain_id") != chainID || !settingsFlag(row.SettingsJSON, "chain_managed") {
+			continue
+		}
+		parts[row.NodeUUID] = append(parts[row.NodeUUID], "o:"+outboundConfigFP(&row))
+	}
+	var routes []models.Route
+	if err := s.db.Find(&routes).Error; err != nil {
+		return nil, err
+	}
+	for i := range routes {
+		row := routes[i]
+		if settingsString(row.RuleJSON, "chain_id") != chainID || !settingsFlag(row.RuleJSON, "chain_managed") {
+			continue
+		}
+		parts[row.NodeUUID] = append(parts[row.NodeUUID], "r:"+routeConfigFP(&row))
+	}
+	out := map[string]string{}
+	for node, items := range parts {
+		sort.Strings(items)
+		out[node] = strings.Join(items, "\n")
+	}
+	return out, nil
+}
+
+func (s *Store) relayGrantExists(inboundID string) (bool, error) {
+	_, err := s.relayUserForInbound(inboundID)
+	if isNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func diffNodeFingerprints(before, after map[string]string) []string {
+	if before == nil {
+		before = map[string]string{}
+	}
+	if after == nil {
+		after = map[string]string{}
+	}
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for node, fp := range after {
+		if before[node] != fp {
+			add(node)
+		}
+	}
+	for node := range before {
+		if _, ok := after[node]; !ok {
+			add(node)
+		}
+	}
+	return out
+}
+
+func outboundConfigEqual(existing, next *models.Outbound) bool {
+	if existing == nil || next == nil {
+		return false
+	}
+	return outboundConfigFP(existing) == outboundConfigFP(next)
+}
+
+func routeConfigEqual(existing, next *models.Route) bool {
+	if existing == nil || next == nil {
+		return false
+	}
+	return routeConfigFP(existing) == routeConfigFP(next)
+}
+
+func outboundConfigFP(row *models.Outbound) string {
+	if row == nil {
+		return ""
+	}
+	return strings.Join([]string{
+		row.NodeUUID,
+		row.Core,
+		row.Protocol,
+		row.Name,
+		strconv.FormatBool(row.Enabled),
+		canonJSON(row.SettingsJSON),
+	}, "\x1f")
+}
+
+func routeConfigFP(row *models.Route) string {
+	if row == nil {
+		return ""
+	}
+	return strings.Join([]string{
+		row.NodeUUID,
+		row.Name,
+		strconv.Itoa(row.Priority),
+		strconv.FormatBool(row.Enabled),
+		canonJSON(row.RuleJSON),
+	}, "\x1f")
+}
+
+func canonJSON(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return raw
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return raw
+	}
+	return string(b)
 }
 
 func uniqueIDs(ids []string) []string {

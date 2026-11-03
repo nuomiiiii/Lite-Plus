@@ -73,6 +73,176 @@ func TestForwardChainManyToOne(t *testing.T) {
 	}
 }
 
+func TestForwardChainOnlyPushesTouchedLineNodes(t *testing.T) {
+	st := testDB(t)
+	landing := testInbound("land", "US", "vless", "land.example.com", 443)
+	frontA := testInbound("front-a", "HK-A", "vless", "a.example.com", 8443)
+	frontB := testInbound("front-b", "JP-B", "vmess", "b.example.com", 8443)
+	frontC := testInbound("front-c", "SG-C", "vless", "c.example.com", 8443)
+	require.NoError(t, st.UpsertInbound(landing))
+	require.NoError(t, st.UpsertInbound(frontA))
+	require.NoError(t, st.UpsertInbound(frontB))
+	require.NoError(t, st.UpsertInbound(frontC))
+
+	view, nodes, err := st.UpsertChain(ChainUpsert{
+		Name:              "US exit",
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{frontA.ID, frontB.ID},
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"front-a", "front-b", "land"}, nodes)
+
+	_, nodes, err = st.UpsertChain(ChainUpsert{
+		ID:                view.ID,
+		Name:              "US exit",
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{frontA.ID, frontB.ID},
+	})
+	require.NoError(t, err)
+	require.Empty(t, nodes)
+
+	_, nodes, err = st.UpsertChain(ChainUpsert{
+		ID:                view.ID,
+		Name:              "US exit",
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{frontA.ID, frontB.ID, frontC.ID},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"front-c"}, nodes)
+
+	_, nodes, err = st.UpsertChain(ChainUpsert{
+		ID:                view.ID,
+		Name:              "US exit",
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{frontB.ID, frontC.ID},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"front-a"}, nodes)
+}
+
+func TestForwardChainChangeLandingPushesSources(t *testing.T) {
+	st := testDB(t)
+	landA := testInbound("land-a", "US-A", "vless", "a.example.com", 443)
+	landB := testInbound("land-b", "US-B", "vless", "b.example.com", 443)
+	frontA := testInbound("front-a", "HK-A", "vless", "a.example.com", 8443)
+	frontB := testInbound("front-b", "JP-B", "vless", "b.example.com", 8443)
+	require.NoError(t, st.UpsertInbound(landA))
+	require.NoError(t, st.UpsertInbound(landB))
+	require.NoError(t, st.UpsertInbound(frontA))
+	require.NoError(t, st.UpsertInbound(frontB))
+
+	view, _, err := st.UpsertChain(ChainUpsert{
+		LandingInboundIDs: []string{landA.ID},
+		SourceInboundIDs:  []string{frontA.ID, frontB.ID},
+	})
+	require.NoError(t, err)
+
+	_, nodes, err := st.UpsertChain(ChainUpsert{
+		ID:                view.ID,
+		LandingInboundIDs: []string{landB.ID},
+		SourceInboundIDs:  []string{frontA.ID, frontB.ID},
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"front-a", "front-b", "land-b"}, nodes)
+}
+
+func TestSyncSourceInboundDoesNotPushSiblingLines(t *testing.T) {
+	st := testDB(t)
+	landing := testInbound("land", "US", "vless", "land.example.com", 443)
+	frontA := testInbound("front-a", "HK-A", "vless", "a.example.com", 8443)
+	frontB := testInbound("front-b", "JP-B", "vless", "b.example.com", 8443)
+	require.NoError(t, st.UpsertInbound(landing))
+	require.NoError(t, st.UpsertInbound(frontA))
+	require.NoError(t, st.UpsertInbound(frontB))
+	_, _, err := st.UpsertChain(ChainUpsert{
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{frontA.ID, frontB.ID},
+	})
+	require.NoError(t, err)
+
+	frontA.Port = 9443
+	require.NoError(t, st.UpsertInbound(frontA))
+	nodes, err := st.SyncChainsForLanding(frontA.ID)
+	require.NoError(t, err)
+	require.Empty(t, nodes)
+}
+
+func TestForwardChainToggleEnabledPushesSourcesOnly(t *testing.T) {
+	st := testDB(t)
+	landing := testInbound("land", "US", "vless", "land.example.com", 443)
+	frontA := testInbound("front-a", "HK-A", "vless", "a.example.com", 8443)
+	frontB := testInbound("front-b", "JP-B", "vless", "b.example.com", 8443)
+	require.NoError(t, st.UpsertInbound(landing))
+	require.NoError(t, st.UpsertInbound(frontA))
+	require.NoError(t, st.UpsertInbound(frontB))
+	view, _, err := st.UpsertChain(ChainUpsert{
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{frontA.ID, frontB.ID},
+	})
+	require.NoError(t, err)
+	off := false
+	_, nodes, err := st.UpsertChain(ChainUpsert{
+		ID:                view.ID,
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{frontA.ID, frontB.ID},
+		Enabled:           &off,
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"front-a", "front-b"}, nodes)
+}
+
+func TestForwardChainSameNodeAddLinePushesOnlyNewNode(t *testing.T) {
+	st := testDB(t)
+	landing := testInbound("land", "US", "vless", "land.example.com", 443)
+	frontA1 := testInbound("front-a", "HK-1", "vless", "a1.example.com", 8443)
+	frontA2 := testInbound("front-a", "HK-2", "vless", "a2.example.com", 8444)
+	frontB := testInbound("front-b", "JP-B", "vless", "b.example.com", 8443)
+	require.NoError(t, st.UpsertInbound(landing))
+	require.NoError(t, st.UpsertInbound(frontA1))
+	require.NoError(t, st.UpsertInbound(frontA2))
+	require.NoError(t, st.UpsertInbound(frontB))
+	view, nodes, err := st.UpsertChain(ChainUpsert{
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{frontA1.ID, frontA2.ID},
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"front-a", "land"}, nodes)
+	_, nodes, err = st.UpsertChain(ChainUpsert{
+		ID:                view.ID,
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{frontA1.ID, frontA2.ID, frontB.ID},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"front-b"}, nodes)
+}
+
+func TestForwardChainConsolidatingRelayPushesLanding(t *testing.T) {
+	st := testDB(t)
+	landing := testInbound("land", "US", "vless", "land.example.com", 443)
+	frontA := testInbound("front-a", "HK-A", "vless", "a.example.com", 8443)
+	frontB := testInbound("front-b", "JP-B", "vless", "b.example.com", 8443)
+	require.NoError(t, st.UpsertInbound(landing))
+	require.NoError(t, st.UpsertInbound(frontA))
+	require.NoError(t, st.UpsertInbound(frontB))
+	view, _, err := st.UpsertChain(ChainUpsert{
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{frontA.ID, frontB.ID},
+	})
+	require.NoError(t, err)
+	extra := &models.NodeUser{Username: "__relay__old", Kind: models.UserKindRelay, Status: models.UserActive, DisplayName: "old"}
+	require.NoError(t, st.UpsertUser(extra))
+	require.NoError(t, st.EnsureGrant(extra.ID, landing.ID))
+	_, nodes, err := st.UpsertChain(ChainUpsert{
+		ID:                view.ID,
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{frontA.ID, frontB.ID},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"land"}, nodes)
+	_, err = st.GetUser(extra.ID)
+	require.Error(t, err)
+}
+
 func TestForwardChainSharesOneRelayUser(t *testing.T) {
 	st := testDB(t)
 	landA := testInbound("land-a", "US-A", "vless", "a.example.com", 443)
@@ -173,8 +343,9 @@ func TestForwardChainSyncsLandingAddress(t *testing.T) {
 	require.NoError(t, err)
 	landing.SettingsJSON = `{"share_strategy":"other","public_host":"new.example.com","transport":"tcp","security":"none"}`
 	require.NoError(t, st.UpsertInbound(landing))
-	_, err = st.SyncChainsForLanding(landing.ID)
+	nodes, err := st.SyncChainsForLanding(landing.ID)
 	require.NoError(t, err)
+	require.Equal(t, []string{"front"}, nodes)
 	outbounds, err := st.ListOutbounds("front")
 	require.NoError(t, err)
 	require.Len(t, outbounds, 1)
