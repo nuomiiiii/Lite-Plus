@@ -480,6 +480,9 @@ func CreateClient() (clientUUID, token string, err error) {
 	if err := notificationdefaults.ApplyDefaultsToNewClient(clientUUID); err != nil {
 		logger.ErrorArgs("clients", "Failed to apply notification defaults to new client:", err)
 	}
+	if err := tasks.ApplyReturnRouteTemplatesToNewClient(clientUUID); err != nil {
+		logger.ErrorArgs("clients", "Failed to apply return-route templates to new client:", err)
+	}
 	invalidateClientListCache()
 	return clientUUID, token, nil
 }
@@ -502,6 +505,9 @@ func CreateClientWithName(name string) (clientUUID, token string, err error) {
 	}
 	if err := notificationdefaults.ApplyDefaultsToNewClient(clientUUID); err != nil {
 		logger.ErrorArgs("clients", "Failed to apply notification defaults to new client:", err)
+	}
+	if err := tasks.ApplyReturnRouteTemplatesToNewClient(clientUUID); err != nil {
+		logger.ErrorArgs("clients", "Failed to apply return-route templates to new client:", err)
 	}
 	invalidateClientListCache()
 	return clientUUID, token, nil
