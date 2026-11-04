@@ -31,6 +31,8 @@ class PlusFollowTests(unittest.TestCase):
     def test_ours_keeps_plus_bgp_table(self) -> None:
         server = (pathlib.Path(__file__).resolve().parent / "follow-ours-server.txt").read_text(encoding="utf-8")
         self.assertIn("database/tasks/return_route_bgp_prefixes.json", server)
+        self.assertIn("database/tasks/return_route_template_test.go", server)
+        self.assertIn("database/clients/client_test.go", server)
         self.assertIn("README.md", server)
         self.assertIn("docs/assets/sponsors/ppflight-banner.png", server)
         self.assertIn("docs/assets/sponsors/ppflight-banner-mobile.png", server)

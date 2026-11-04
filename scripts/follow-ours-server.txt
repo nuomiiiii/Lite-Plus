@@ -10,6 +10,8 @@ README.md
 docs/assets/sponsors/ppflight-banner.png
 docs/assets/sponsors/ppflight-banner-mobile.png
 database/tasks/return_route_bgp_prefixes.json
+database/tasks/return_route_template_test.go
+database/clients/client_test.go
 cmd/server.go
 cmd/version.go
 database/accounts/2fa.go
