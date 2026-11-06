@@ -13,6 +13,7 @@ COPY --chmod=755 Lite-${TARGETOS}-${TARGETARCH} /app/Lite
 ENV GIN_MODE=release
 ENV LITE_DEPLOYMENT=docker
 ENV TZ=Asia/Shanghai
+ENV GODEBUG=disablethp=1
 
 EXPOSE 28777 37888
 
