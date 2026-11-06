@@ -12,10 +12,10 @@ inputs:
     description: Optional Lite-Plus-web ref to build. Uses the repository default branch when empty.
     default: main
   theme-repository:
-    description: Lite-theme Git clone URL. Leave empty to use the sibling repo under the current GitHub owner.
+    description: Lite-theme Git clone URL. Leave empty to clone nuomiiiii/Lite-theme.
     default: ""
   theme-ref:
-    description: Optional Lite-theme ref to build. Empty uses the pin in plus-baseline.json (v1.2.9).
+    description: Optional Lite-theme ref to build. Empty uses the pin in plus-baseline.json.
     default: ""
   expected-version:
     description: If set, fail unless Lite-Plus-web package.json version matches this x.y.z.
@@ -70,7 +70,7 @@ runs:
         rm -rf "$theme_dir"
         theme_repo="${{ inputs.theme-repository }}"
         if [ -z "$theme_repo" ]; then
-          theme_repo="https://github.com/${owner}/Lite-theme"
+          theme_repo="https://github.com/nuomiiiii/Lite-theme"
         fi
         theme_ref="${{ inputs.theme-ref }}"
         if [ -z "$theme_ref" ]; then
@@ -78,7 +78,7 @@ runs:
           if [ -f "$follow_py" ]; then
             theme_ref="$(python3 "$follow_py" theme-ref "")"
           else
-            theme_ref="v1.2.9"
+            theme_ref="$(python3 -c "import json; print('v'+json.load(open('plus-baseline.json'))['lite_theme'].lstrip('v'))")"
           fi
         fi
         git clone --depth=1 --branch "$theme_ref" "$theme_repo" "$theme_dir"

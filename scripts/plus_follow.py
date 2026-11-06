@@ -159,7 +159,11 @@ def decide_same_version(
 def theme_git_ref(raw: str) -> str:
     value = (raw or "").strip()
     if not value:
-        return "v1.2.9"
+        baseline = pathlib.Path(__file__).resolve().parent.parent / "plus-baseline.json"
+        if baseline.is_file():
+            value = str(json.loads(baseline.read_text(encoding="utf-8")).get("lite_theme") or "").strip()
+    if not value:
+        raise SystemExit("theme-ref is empty; set lite_theme in plus-baseline.json")
     if value in {"main", "master", "Snapshot"}:
         return value
     if value.startswith("v") or value.startswith("Snapshot-"):

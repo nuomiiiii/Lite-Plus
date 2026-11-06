@@ -227,12 +227,17 @@ func TestRecordUsageSameBatchKeepsBothUsers(t *testing.T) {
 	require.NoError(t, svc.Store.UpsertUser(b))
 	require.NoError(t, svc.RecordUsageFromNode("n1", a.ID, 100, "same-agent-batch"))
 	require.NoError(t, svc.RecordUsageFromNode("n1", b.ID, 200, "same-agent-batch"))
+	require.NoError(t, svc.RecordUsageFromNode("n1", a.ID, 100, "same-agent-batch"))
+	require.NoError(t, svc.RecordUsageFromNode("n1", b.ID, 200, "same-agent-batch"))
 	gotA, err := svc.Store.GetUser(a.ID)
 	require.NoError(t, err)
 	gotB, err := svc.Store.GetUser(b.ID)
 	require.NoError(t, err)
 	require.Equal(t, int64(100), gotA.UsedBytes)
 	require.Equal(t, int64(200), gotB.UsedBytes)
+	var usageRows int64
+	require.NoError(t, svc.Store.DB().Model(&models.QuotaLedger{}).Where("reason = ?", "usage").Count(&usageRows).Error)
+	require.Zero(t, usageRows)
 }
 
 func TestSyncDueTrafficResetsEnqueuesQuotaSync(t *testing.T) {

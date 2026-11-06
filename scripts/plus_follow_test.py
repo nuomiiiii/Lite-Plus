@@ -48,9 +48,9 @@ class PlusFollowTests(unittest.TestCase):
         self.assertIn("cmd/app.go", server)
 
     def test_theme_git_ref(self) -> None:
-        self.assertEqual(plus_follow.theme_git_ref(""), "v1.2.9")
-        self.assertEqual(plus_follow.theme_git_ref("1.2.9"), "v1.2.9")
-        self.assertEqual(plus_follow.theme_git_ref("v1.2.9"), "v1.2.9")
+        self.assertEqual(plus_follow.theme_git_ref(""), "v1.3.0")
+        self.assertEqual(plus_follow.theme_git_ref("1.3.0"), "v1.3.0")
+        self.assertEqual(plus_follow.theme_git_ref("v1.3.0"), "v1.3.0")
         self.assertEqual(plus_follow.theme_git_ref("main"), "main")
 
     def test_validate_and_rewrite_baseline(self) -> None:

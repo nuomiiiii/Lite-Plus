@@ -22,7 +22,7 @@ on:
         default: ""
         type: string
       theme_ref:
-        description: Lite-theme branch or tag. Leave empty to use the pin in plus-baseline.json (v1.2.9).
+        description: Lite-theme branch or tag. Leave empty to use the pin in plus-baseline.json.
         required: false
         default: ""
         type: string

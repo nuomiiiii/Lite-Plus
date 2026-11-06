@@ -61,6 +61,23 @@ func TestNodemgtSettingsMetadataFlagsDoNotRestartListener(t *testing.T) {
 	}
 }
 
+func TestNodemgtUserUpsertAuditsAfterTransaction(t *testing.T) {
+	src, err := os.ReadFile("admin.nodemgt.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	if strings.Contains(text, `return nodemgtAudit(ctx, st, "nodemgt.user.upsert"`) {
+		t.Fatal("user.upsert still writes the audit row inside the sqlite transaction")
+	}
+	if !strings.Contains(text, `	}); txErr != nil {
+		return nil, nodemgtErr(txErr)
+	}
+	_ = nodemgtAudit(ctx, nodemgtST(), "nodemgt.user.upsert", p.ID, p.Username)`) {
+		t.Fatal("user.upsert must write the audit row after the sqlite transaction commits")
+	}
+}
+
 func TestNodemgtShouldClearPlan(t *testing.T) {
 	if nodemgtShouldClearPlan("", false) {
 		t.Fatal("new user with no plan must not unassign")

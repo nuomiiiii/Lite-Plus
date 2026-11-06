@@ -322,7 +322,7 @@ func (s *Service) Modify(actor, userID, operationID string, quota *int64, rate *
 	return enqueueUserSync(s.Store, user.ID, "applyConfig", ensureOpID(operationID))
 }
 
-func (s *Service) Disable(actor, userID, operationID string) error {
+func (s *Service) Disable(_, userID, operationID string) error {
 	if err := s.Store.SetUserStatus(userID, models.UserDisabled); err != nil {
 		return err
 	}
@@ -330,7 +330,6 @@ func (s *Service) Disable(actor, userID, operationID string) error {
 	if err != nil {
 		return err
 	}
-	_ = s.Store.Audit(actor, "nodemgt.disable", user.ID, "")
 	return enqueueUserSync(s.Store, user.ID, "revokeUser", ensureOpID(operationID))
 }
 
@@ -366,17 +365,20 @@ func (s *Service) RecordUsageFromNode(nodeUUID, userID string, bytes int64, batc
 		if strings.TrimSpace(userID) != "" {
 			ledgerOp = userID + ":" + batchID
 		}
-		if err := inner.AddLedger(userID, "usage", ledgerOp, bytes); errors.Is(err, store.ErrConflict) {
-			return nil
-		} else if err != nil {
+		seen, err := inner.UsageBatchSeen(userID, ledgerOp)
+		if err != nil {
 			return err
+		}
+		if seen {
+			return nil
 		}
 		reset, err := inner.ApplyUserTrafficReset(userID, time.Now().UTC())
 		if err != nil {
 			return err
 		}
-		if err := tx.Model(&models.NodeUser{}).Where("id = ?", userID).
-			UpdateColumn("used_bytes", gorm.Expr("used_bytes + ?", bytes)).Error; err != nil {
+		if err := inner.ApplyUsageBatch(userID, ledgerOp, bytes); errors.Is(err, store.ErrConflict) {
+			return nil
+		} else if err != nil {
 			return err
 		}
 		if !reset {

@@ -93,6 +93,9 @@ func (s *Store) Migrate() error {
 	if err := s.pruneOrphanGrants(); err != nil {
 		return err
 	}
+	if err := s.migrateAuditEventsToLogs(); err != nil {
+		return err
+	}
 	return s.PurgeMissingNodes()
 }
 
@@ -139,27 +142,6 @@ func dropLegacyUserIPIndex(db *gorm.DB) error {
 func newID() string { return uuid.NewString() }
 
 func now() time.Time { return time.Now().UTC() }
-
-func (s *Store) Audit(actor, action, target, detail string) error {
-	ev := models.AuditEvent{
-		ID:        newID(),
-		Actor:     actor,
-		Action:    action,
-		Target:    target,
-		Detail:    detail,
-		CreatedAt: now(),
-	}
-	return s.db.Create(&ev).Error
-}
-
-func (s *Store) ListAudit(limit int) ([]models.AuditEvent, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	var rows []models.AuditEvent
-	err := s.db.Order("created_at DESC").Limit(limit).Find(&rows).Error
-	return rows, err
-}
 
 func (s *Store) ListInbounds(nodeUUID string) ([]models.Inbound, error) {
 	var rows []models.Inbound
@@ -465,7 +447,7 @@ func (s *Store) UpsertUser(row *models.NodeUser) error {
 	if row.CreatedAt.IsZero() {
 		row.CreatedAt = row.UpdatedAt
 	}
-	return s.db.Omit("IPsClearedAt").Save(row).Error
+	return s.db.Omit("IPsClearedAt", "LastUsageOp").Save(row).Error
 }
 
 // SaveUserProfile creates a user or updates display fields without touching
@@ -1216,6 +1198,49 @@ func (s *Store) DeleteAssignments(userID string) error {
 	return s.db.Where("user_id = ?", userID).Delete(&models.Assignment{}).Error
 }
 
+func (s *Store) UsageBatchSeen(userID, opID string) (bool, error) {
+	userID = strings.TrimSpace(userID)
+	opID = strings.TrimSpace(opID)
+	if userID == "" || opID == "" {
+		return false, ErrInvalid
+	}
+	var current models.NodeUser
+	if err := s.db.Select("id", "last_usage_op").First(&current, "id = ?", userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, ErrNotFound
+		}
+		return false, err
+	}
+	return current.LastUsageOp == opID, nil
+}
+
+func (s *Store) ApplyUsageBatch(userID, opID string, bytes int64) error {
+	userID = strings.TrimSpace(userID)
+	opID = strings.TrimSpace(opID)
+	if userID == "" || opID == "" {
+		return ErrInvalid
+	}
+	res := s.db.Model(&models.NodeUser{}).Where("id = ? AND last_usage_op <> ?", userID, opID).Updates(map[string]any{
+		"used_bytes":    gorm.Expr("used_bytes + ?", bytes),
+		"last_usage_op": opID,
+		"updated_at":    now(),
+	})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected > 0 {
+		return nil
+	}
+	seen, err := s.UsageBatchSeen(userID, opID)
+	if err != nil {
+		return err
+	}
+	if seen {
+		return ErrConflict
+	}
+	return ErrNotFound
+}
+
 func (s *Store) AddLedger(userID, reason, opID string, delta int64) error {
 	if opID == "" {
 		opID = newID()
@@ -1246,6 +1271,18 @@ func (s *Store) ListSubscriptions() ([]models.Subscription, error) {
 		revealSubscription(&rows[i])
 	}
 	return rows, nil
+}
+
+func (s *Store) GetSubscription(id string) (*models.Subscription, error) {
+	var row models.Subscription
+	if err := s.db.First(&row, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	revealSubscription(&row)
+	return &row, nil
 }
 
 func (s *Store) GetSubscriptionByUser(userID string) (*models.Subscription, error) {
@@ -1572,7 +1609,7 @@ func (s *Store) EnqueueCommand(cmd *models.ControlCommand) error {
 	if cmd.Kind == "applyConfig" && cmd.NodeUUID != "" {
 		_ = s.db.Model(&models.ControlCommand{}).
 			Where("node_uuid = ? AND kind = ? AND status IN ?", cmd.NodeUUID, "applyConfig", []string{models.CmdPending, models.CmdSent}).
-			Updates(map[string]any{"status": models.CmdSuperseded, "updated_at": now()}).Error
+			Updates(map[string]any{"status": models.CmdSuperseded, "payload_json": "", "updated_at": now()}).Error
 	}
 	if cmd.Kind == "applyConfig" || cmd.Kind == "syncQuota" || cmd.Kind == "applyCert" {
 		sealed, err := secretcrypt.Seal(cmd.PayloadJSON)
@@ -1653,6 +1690,9 @@ func (s *Store) AckCommand(operationID, status, lastErr string) error {
 	if status == models.CmdApplied {
 		t := now()
 		updates["acked_at"] = t
+	}
+	if status == models.CmdApplied || status == models.CmdFailed || status == models.CmdSuperseded {
+		updates["payload_json"] = ""
 	}
 	res := s.db.Model(&models.ControlCommand{}).Where("operation_id = ?", operationID).Updates(updates)
 	if res.Error != nil {

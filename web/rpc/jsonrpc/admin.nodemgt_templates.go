@@ -3,6 +3,7 @@ package jsonrpc
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/nuomiiiii/lite/nodemgt/models"
 	"github.com/nuomiiiii/lite/nodemgt/store"
@@ -46,7 +47,7 @@ func nodemgtTemplateUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 	if err := st.UpsertSubscriptionTemplate(&row); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.template.upsert", row.ID, row.Name)
+	_ = nodemgtAudit(ctx, st, "nodemgt.template.upsert", row.ID, row.Name)
 	return row, nil
 }
 
@@ -58,10 +59,14 @@ func nodemgtTemplateDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
 	}
 	st := nodemgtST()
+	name := p.ID
+	if row, err := st.GetSubscriptionTemplate(p.ID); err == nil && row != nil && strings.TrimSpace(row.Name) != "" {
+		name = row.Name
+	}
 	if err := st.DeleteSubscriptionTemplate(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.template.delete", p.ID, "")
+	_ = nodemgtAudit(ctx, st, "nodemgt.template.delete", p.ID, name)
 	return map[string]any{"ok": true}, nil
 }
 
@@ -79,7 +84,7 @@ func nodemgtTemplateBind(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rp
 	if err := st.SetSubscriptionTemplateBinding(&row); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.template.bind", row.ScopeID, fmt.Sprintf("%s/%s", row.Scope, row.Client))
+	_ = nodemgtAudit(ctx, st, "nodemgt.template.bind", row.ScopeID, fmt.Sprintf("%s/%s", row.Scope, row.Client))
 	return map[string]any{"ok": true}, nil
 }
 

@@ -153,7 +153,12 @@ jobs:
             exit 1
           fi
 
-          THEME_REF="$(python3 scripts/plus_follow.py theme-ref "$BASE_THEME")"
+          THEME_TAG="$(gh api repos/nuomiiiii/Lite-theme/releases --paginate --jq '[.[] | select(.draft==false and .prerelease==false and (.tag_name | test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$")))] | .[0].tag_name')"
+          THEME_PIN="${THEME_TAG#v}"
+          if [ -z "$THEME_PIN" ]; then
+            THEME_PIN="$BASE_THEME"
+          fi
+          THEME_REF="$(python3 scripts/plus_follow.py theme-ref "$THEME_PIN")"
           echo "mode=$MODE next plus=$NEW_PLUS theme_ref=$THEME_REF"
 
           OWNER="${GITHUB_REPOSITORY_OWNER}"
@@ -187,7 +192,7 @@ jobs:
             exit 0
           fi
 
-          python3 scripts/plus_follow.py rewrite-web "$WEB_DIR" "$NEW_PLUS" "$TAG" "$TAG" "$BASE_AGENT" "$BASE_THEME" "$LITE_HASH" "$WEB_HASH"
+          python3 scripts/plus_follow.py rewrite-web "$WEB_DIR" "$NEW_PLUS" "$TAG" "$TAG" "$BASE_AGENT" "$THEME_PIN" "$LITE_HASH" "$WEB_HASH"
           git -C "$WEB_DIR" add -A
           git -C "$WEB_DIR" diff --cached --quiet || git -C "$WEB_DIR" commit -m "follow: Lite-web ${TAG} → Plus-web ${NEW_PLUS}"
 
@@ -208,7 +213,7 @@ jobs:
             exit 0
           fi
 
-          python3 scripts/plus_follow.py rewrite-server "$GITHUB_WORKSPACE" "$NEW_PLUS" "$TAG" "$TAG" "$BASE_AGENT" "$BASE_THEME" "$LITE_HASH" "$WEB_HASH"
+          python3 scripts/plus_follow.py rewrite-server "$GITHUB_WORKSPACE" "$NEW_PLUS" "$TAG" "$TAG" "$BASE_AGENT" "$THEME_PIN" "$LITE_HASH" "$WEB_HASH"
           go mod tidy
           go test ./...
           git add -A

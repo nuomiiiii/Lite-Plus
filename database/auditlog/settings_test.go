@@ -5,6 +5,40 @@ import (
 	"testing"
 )
 
+func TestNodemgtLogsUseOnScreenLabels(t *testing.T) {
+	for key, labels := range dialStackLabels {
+		stack := Message("audit.nodemgt_node_upsert", map[string]string{"name": "sg-1", "stack": key})
+		if !strings.Contains(stack, "sg-1") {
+			t.Fatalf("stack %s missing node name: %s", key, stack)
+		}
+		for _, label := range labels {
+			if !strings.Contains(stack, label) {
+				t.Fatalf("stack %s missing %q: %s", key, label, stack)
+			}
+		}
+	}
+	settings := Message("audit.nodemgt_settings_set", map[string]string{"name": "sub_path,sub_listen_port", "settings": "sub_path,sub_listen_port"})
+	for _, label := range []string{"URL 路径", "监听端口", "URL path", "Listen port"} {
+		if !strings.Contains(settings, label) {
+			t.Fatalf("settings log missing %q: %s", label, settings)
+		}
+	}
+	status := Message("audit.nodemgt_user_set_status", map[string]string{"name": "alice", "status": "expired"})
+	for _, label := range []string{"设为「到期」", "to Expired", "を「期限切れ」に", "設為「到期」"} {
+		if !strings.Contains(status, label) {
+			t.Fatalf("status log missing %q: %s", label, status)
+		}
+	}
+	plan := Message("audit.nodemgt_plan_delete", map[string]string{"name": "标准套餐"})
+	if !strings.Contains(plan, "删除了套餐「标准套餐」") {
+		t.Fatalf("plan delete log: %s", plan)
+	}
+	sub := Message("audit.nodemgt_subscription_delete", map[string]string{"name": "alice"})
+	if !strings.Contains(sub, "删除了用户「alice」的订阅") {
+		t.Fatalf("subscription delete log: %s", sub)
+	}
+}
+
 func TestAllowMCPUsesTheOnScreenName(t *testing.T) {
 	changes := SettingChanges(
 		map[string]any{"allow_mcp": false},

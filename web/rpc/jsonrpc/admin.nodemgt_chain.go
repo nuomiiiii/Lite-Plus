@@ -57,7 +57,7 @@ func nodemgtChainUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	if view != nil {
 		target = view.ID
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.chain.upsert", target, strings.TrimSpace(p.Name))
+	_ = nodemgtAudit(ctx, st, "nodemgt.chain.upsert", target, strings.TrimSpace(p.Name))
 	nodemgtPushNodes(st, nodes...)
 	return view, nil
 }
@@ -76,7 +76,7 @@ func nodemgtChainDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.chain.delete", p.ID, row.Name)
+	_ = nodemgtAudit(ctx, st, "nodemgt.chain.delete", p.ID, row.Name)
 	nodemgtPushNodes(st, nodes...)
 	return map[string]any{"ok": true}, nil
 }

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nuomiiiii/lite/database/accounts"
+	"github.com/nuomiiiii/lite/database/auditlog"
 	"github.com/nuomiiiii/lite/database/clients"
 	"github.com/nuomiiiii/lite/database/dbcore"
 	"github.com/nuomiiiii/lite/nodemgt/cert"
@@ -70,7 +70,6 @@ func init() {
 	reg("nodemgt.subscription.upsert", nodemgtSubUpsert, "Create or update a subscription")
 	reg("nodemgt.subscription.delete", nodemgtSubDelete, "Delete a subscription")
 	reg("nodemgt.subscription.preview", nodemgtSubPreview, "Preview a subscription payload")
-	reg("nodemgt.audit.list", nodemgtAuditList, "List nodemgt audit events")
 	reg("nodemgt.control.sync", nodemgtControlSync, "Push pending nodemgt control commands")
 	reg("nodemgt.control.status", nodemgtControlStatus, "Latest nodemgt control delivery per node")
 	reg("nodemgt.diag.status", nodemgtDiagStatus, "nodemgt diagnostics")
@@ -100,21 +99,48 @@ func nodemgtErr(err error) *rpc.JsonRpcError {
 
 func nodemgtActor(ctx context.Context) string {
 	u, _ := auditActor(ctx)
-	if u == "" {
+	if strings.TrimSpace(u) == "" {
 		return "admin"
 	}
-	return nodemgtActorName(u)
+	return strings.TrimSpace(u)
 }
 
-func nodemgtActorName(id string) string {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return "admin"
+func nodemgtAudit(ctx context.Context, _ *store.Store, action, target, detail string, extra ...map[string]string) error {
+	actor, ip := auditActor(ctx)
+	key, params := store.NodemgtAuditPayload(action, target, detail)
+	if len(extra) > 0 {
+		for k, v := range extra[0] {
+			if strings.TrimSpace(v) != "" {
+				params[k] = v
+			}
+		}
 	}
-	if user, err := accounts.GetUserByUUID(id); err == nil && strings.TrimSpace(user.Username) != "" {
-		return user.Username
+	auditlog.Event(ip, actor, "nodemgt", key, params)
+	return nil
+}
+
+func nodemgtUserLabel(st *store.Store, userID string) string {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return ""
 	}
-	return id
+	if user, err := st.GetUser(userID); err == nil && user != nil {
+		if name := strings.TrimSpace(user.Username); name != "" {
+			return name
+		}
+	}
+	return userID
+}
+
+func nodemgtNodeLabel(uuid string) string {
+	uuid = strings.TrimSpace(uuid)
+	if uuid == "" {
+		return ""
+	}
+	if name := strings.TrimSpace(clients.DisplayName(uuid)); name != "" {
+		return name
+	}
+	return uuid
 }
 
 func nodemgtPush(st *store.Store, nodeUUID string) {
@@ -556,7 +582,7 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	if err := st.UpsertInbound(&row); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.inbound.upsert", row.ID, row.Name)
+	_ = nodemgtAudit(ctx, st, "nodemgt.inbound.upsert", row.ID, row.Name)
 	switch op {
 	case firewall.InboundFirewallLink:
 		if err := firewall.LinkInbound(row.NodeUUID, row); err != nil {
@@ -682,7 +708,7 @@ func nodemgtInboundDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	if err := st.DeleteInbound(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.inbound.delete", p.ID, row.Name)
+	_ = nodemgtAudit(ctx, st, "nodemgt.inbound.delete", p.ID, row.Name)
 	nodemgtPushNodes(st, append([]string{row.NodeUUID}, chainNodes...)...)
 	out := map[string]any{"ok": true}
 	if grantMeta != nil {
@@ -706,7 +732,7 @@ func nodemgtInboundReorder(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 	if err := st.ReorderInbounds(p.NodeUUID, p.IDs); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.inbound.reorder", p.NodeUUID, "")
+	_ = nodemgtAudit(ctx, st, "nodemgt.inbound.reorder", p.NodeUUID, nodemgtNodeLabel(p.NodeUUID))
 	if p.NodeUUID != "" {
 		nodemgtPush(st, p.NodeUUID)
 	}
@@ -882,7 +908,7 @@ func nodemgtOutboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 	if err := st.UpsertOutbound(&p.Outbound); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.outbound.upsert", p.ID, p.Name)
+	_ = nodemgtAudit(ctx, st, "nodemgt.outbound.upsert", p.ID, p.Name)
 	nodemgtPush(st, p.NodeUUID)
 	return outboundView(p.Outbound), nil
 }
@@ -900,7 +926,7 @@ func nodemgtOutboundDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 	if err := st.DeleteOutbound(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.outbound.delete", p.ID, row.Name)
+	_ = nodemgtAudit(ctx, st, "nodemgt.outbound.delete", p.ID, row.Name)
 	nodemgtPush(st, row.NodeUUID)
 	return map[string]any{"ok": true}, nil
 }
@@ -1036,7 +1062,7 @@ func nodemgtRouteUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	if got, err := st.GetRoute(row.ID); err == nil {
 		saved = *got
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.route.upsert", saved.ID, saved.Name)
+	_ = nodemgtAudit(ctx, st, "nodemgt.route.upsert", saved.ID, saved.Name)
 	nodemgtPush(st, saved.NodeUUID)
 	return routeView(saved), nil
 }
@@ -1054,7 +1080,7 @@ func nodemgtRouteDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	if err := st.DeleteRoute(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.route.delete", p.ID, row.Name)
+	_ = nodemgtAudit(ctx, st, "nodemgt.route.delete", p.ID, row.Name)
 	nodemgtPush(st, row.NodeUUID)
 	return map[string]any{"ok": true}, nil
 }
@@ -1183,10 +1209,11 @@ func nodemgtUserUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 			}
 			issuedSecret = secret
 		}
-		return st.Audit(actor, "nodemgt.user.upsert", p.ID, p.Username)
+		return nil
 	}); txErr != nil {
 		return nil, nodemgtErr(txErr)
 	}
+	_ = nodemgtAudit(ctx, nodemgtST(), "nodemgt.user.upsert", p.ID, p.Username)
 	st := store.New(db)
 	after, _ := st.NodeIDsForUser(p.ID)
 	nodemgtPushNodes(st, append(append([]string{}, before...), after...)...)
@@ -1212,7 +1239,7 @@ func nodemgtUserClearIPs(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rp
 	if err := st.ClearUserIPs(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.user.clearIPs", p.ID, "")
+	_ = nodemgtAudit(ctx, st, "nodemgt.user.clearIPs", p.ID, nodemgtUserLabel(st, p.ID))
 	return map[string]any{"ok": true}, nil
 }
 
@@ -1230,7 +1257,7 @@ func nodemgtUserDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	if err := st.DeleteUser(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.user.delete", p.ID, user.Username)
+	_ = nodemgtAudit(ctx, st, "nodemgt.user.delete", p.ID, user.Username)
 	nodemgtPushNodes(st, append(nodes, user.NodeUUID)...)
 	return map[string]any{"ok": true}, nil
 }
@@ -1253,6 +1280,7 @@ func nodemgtUserSetStatus(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
+	_ = nodemgtAudit(ctx, nodemgtST(), "nodemgt.user.setStatus", user.ID, user.Username, map[string]string{"status": p.Status})
 	nodemgtPushUser(nodemgtST(), user.ID)
 	return user, nil
 }
@@ -1287,7 +1315,7 @@ func nodemgtCredentialIssue(ctx context.Context, req *rpc.JsonRpcRequest) (any, 
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.credential.issue", cred.ID, p.UserID)
+	_ = nodemgtAudit(ctx, st, "nodemgt.credential.issue", cred.ID, nodemgtUserLabel(st, p.UserID))
 	nodemgtPushUser(st, p.UserID)
 	return map[string]any{"credential": cred, "secret": secret}, nil
 }
@@ -1301,7 +1329,7 @@ func nodemgtCredentialRotate(ctx context.Context, req *rpc.JsonRpcRequest) (any,
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = nodemgtST().Audit(nodemgtActor(ctx), "nodemgt.credential.rotate", cred.ID, "")
+	_ = nodemgtAudit(ctx, nodemgtST(), "nodemgt.credential.rotate", cred.ID, nodemgtUserLabel(nodemgtST(), cred.UserID))
 	nodemgtPushUser(nodemgtST(), cred.UserID)
 	return map[string]any{"credential": cred, "secret": secret}, nil
 }
@@ -1319,7 +1347,7 @@ func nodemgtCredentialRevoke(ctx context.Context, req *rpc.JsonRpcRequest) (any,
 	if err := st.RevokeCredential(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.credential.revoke", p.ID, "")
+	_ = nodemgtAudit(ctx, st, "nodemgt.credential.revoke", p.ID, nodemgtUserLabel(st, cred.UserID))
 	nodemgtPushUser(st, cred.UserID)
 	return map[string]any{"ok": true}, nil
 }
@@ -1354,7 +1382,7 @@ func nodemgtPlanUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	for _, userID := range affected {
 		nodemgtPushUser(st, userID)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.plan.upsert", row.ID, row.Name)
+	_ = nodemgtAudit(ctx, st, "nodemgt.plan.upsert", row.ID, row.Name)
 	return row, nil
 }
 
@@ -1364,6 +1392,10 @@ func nodemgtPlanDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	}
 	_ = req.BindParams(&p)
 	st := nodemgtST()
+	plan, err := st.GetPlan(p.ID)
+	if err != nil {
+		return nil, nodemgtErr(err)
+	}
 	affected, err := nodemgtOps().UnassignPlan(nodemgtActor(ctx), p.ID, "")
 	if err != nil {
 		return nil, nodemgtErr(err)
@@ -1374,6 +1406,7 @@ func nodemgtPlanDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	if err := st.DeletePlan(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
+	_ = nodemgtAudit(ctx, st, "nodemgt.plan.delete", p.ID, plan.Name)
 	return map[string]any{"ok": true}, nil
 }
 
@@ -1502,7 +1535,7 @@ func nodemgtRootCertIssue(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	if err := st.UpsertRootCert(&row); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.root_cert.issue", row.ID, domain)
+	_ = nodemgtAudit(ctx, st, "nodemgt.root_cert.issue", row.ID, domain)
 	if p.Sync || p.TestCA {
 		if err := control.IssueRootCert(ctx, st, &row, p.TestCA); err != nil {
 			return rootCertView(row), nodemgtErr(err)
@@ -1551,7 +1584,7 @@ func nodemgtRootCertDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 	if err := st.DeleteRootCert(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.root_cert.delete", p.ID, row.Domain)
+	_ = nodemgtAudit(ctx, st, "nodemgt.root_cert.delete", p.ID, row.Domain)
 	return map[string]any{"ok": true}, nil
 }
 
@@ -1588,7 +1621,7 @@ func nodemgtRootCertSetAutoRenew(ctx context.Context, req *rpc.JsonRpcRequest) (
 	if err := st.UpsertRootCert(row); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.root_cert.set_auto_renew", row.ID, row.Domain)
+	_ = nodemgtAudit(ctx, st, "nodemgt.root_cert.set_auto_renew", row.ID, row.Domain)
 	return rootCertView(*row), nil
 }
 
@@ -1610,7 +1643,7 @@ func nodemgtCertSetAutoRenew(ctx context.Context, req *rpc.JsonRpcRequest) (any,
 	if err := st.UpsertCert(row); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.cert.set_auto_renew", row.ID, row.Domain)
+	_ = nodemgtAudit(ctx, st, "nodemgt.cert.set_auto_renew", row.ID, row.Domain)
 	return row, nil
 }
 
@@ -1655,7 +1688,7 @@ func nodemgtCertRequest(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		if err := control.DeployRootToNode(st, root, &row, p.ShareDomain); err != nil {
 			return nil, nodemgtErr(err)
 		}
-		_ = st.Audit(nodemgtActor(ctx), "nodemgt.cert.deploy_root", row.ID, row.ShareDomain)
+		_ = nodemgtAudit(ctx, st, "nodemgt.cert.deploy_root", row.ID, row.ShareDomain)
 		nodemgtPush(st, row.NodeUUID)
 		return row, nil
 	}
@@ -1695,7 +1728,7 @@ func nodemgtCertRequest(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		if err := control.BindFileCert(st, &row); err != nil {
 			return nil, nodemgtErr(err)
 		}
-		_ = st.Audit(nodemgtActor(ctx), "nodemgt.cert.bind_file", row.ID, p.Domain)
+		_ = nodemgtAudit(ctx, st, "nodemgt.cert.bind_file", row.ID, p.Domain)
 		return row, nil
 	}
 	row.Source = models.CertSourceACME
@@ -1735,7 +1768,7 @@ func nodemgtCertRequest(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	if err := control.ApplyIssuedCert(st, &row, issued, p.Domain); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.cert.issue", row.ID, p.Domain)
+	_ = nodemgtAudit(ctx, st, "nodemgt.cert.issue", row.ID, p.Domain)
 	return row, nil
 }
 
@@ -1755,7 +1788,7 @@ func nodemgtCertDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	if err := st.DeleteCert(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.cert.delete", p.ID, row.Domain)
+	_ = nodemgtAudit(ctx, st, "nodemgt.cert.delete", p.ID, row.Domain)
 	nodemgtPush(st, row.NodeUUID)
 	return map[string]any{"ok": true}, nil
 }
@@ -1835,18 +1868,28 @@ func nodemgtSubUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.J
 	if err := st.UpsertSubscription(&row); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.subscription.upsert", row.ID, "")
+	_ = nodemgtAudit(ctx, st, "nodemgt.subscription.upsert", row.ID, nodemgtUserLabel(st, row.UserID))
 	return row, nil
 }
 
-func nodemgtSubDelete(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+func nodemgtSubDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	var p struct {
 		ID string `json:"id"`
 	}
 	_ = req.BindParams(&p)
-	if err := nodemgtST().DeleteSubscription(p.ID); err != nil {
+	st := nodemgtST()
+	row, err := st.GetSubscription(p.ID)
+	if err != nil {
 		return nil, nodemgtErr(err)
 	}
+	name := row.UserID
+	if user, err := st.GetUser(row.UserID); err == nil && user != nil && strings.TrimSpace(user.Username) != "" {
+		name = user.Username
+	}
+	if err := st.DeleteSubscription(p.ID); err != nil {
+		return nil, nodemgtErr(err)
+	}
+	_ = nodemgtAudit(ctx, st, "nodemgt.subscription.delete", p.ID, name)
 	return map[string]any{"ok": true}, nil
 }
 
@@ -1891,32 +1934,6 @@ func nodemgtSubPreview(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.Js
 		"path":         subhttp.NormalizePath(cfg.Path) + row.Token,
 		"url":          subhttp.PublicURL(cfg, row.Token),
 	}, nil
-}
-
-func nodemgtAuditList(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
-	var p struct {
-		Limit int `json:"limit"`
-	}
-	_ = req.BindParams(&p)
-	rows, err := nodemgtST().ListAudit(p.Limit)
-	if err != nil {
-		return nil, nodemgtErr(err)
-	}
-	out := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
-		target := strings.TrimSpace(row.Detail)
-		if target == "" {
-			target = row.Target
-		}
-		out = append(out, map[string]any{
-			"id":         row.ID,
-			"actor":      nodemgtActorName(row.Actor),
-			"action":     row.Action,
-			"target":     target,
-			"created_at": row.CreatedAt,
-		})
-	}
-	return out, nil
 }
 
 func nodemgtControlStatus(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
@@ -2027,23 +2044,110 @@ func nodemgtSettingsGet(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.Jso
 	}, nil
 }
 
-func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
-	var p struct {
-		CFAPIToken         string  `json:"cf_api_token"`
-		ClearIssuer        *bool   `json:"clear_issuer"`
-		ACMEEmail          *string `json:"acme_email"`
-		SubListenPort      *int    `json:"sub_listen_port"`
-		SubPublicPort      *int    `json:"sub_public_port"`
-		SubPath            *string `json:"sub_path"`
-		SubPublicHost      *string `json:"sub_public_host"`
-		SubReuseHTTPS      *bool   `json:"sub_reuse_https"`
-		SubPublishName     *bool   `json:"sub_publish_name"`
-		SubPublishUserinfo *bool   `json:"sub_publish_userinfo"`
+type nodemgtSettingsPatch struct {
+	CFAPIToken         string  `json:"cf_api_token"`
+	ClearIssuer        *bool   `json:"clear_issuer"`
+	ACMEEmail          *string `json:"acme_email"`
+	SubListenPort      *int    `json:"sub_listen_port"`
+	SubPublicPort      *int    `json:"sub_public_port"`
+	SubPath            *string `json:"sub_path"`
+	SubPublicHost      *string `json:"sub_public_host"`
+	SubReuseHTTPS      *bool   `json:"sub_reuse_https"`
+	SubPublishName     *bool   `json:"sub_publish_name"`
+	SubPublishUserinfo *bool   `json:"sub_publish_userinfo"`
+}
+
+type nodemgtSettingsSnapshot struct {
+	Token           string
+	Email           string
+	ListenPort      int
+	PublicPort      int
+	Path            string
+	PublicHost      string
+	ReuseHTTPS      bool
+	PublishName     bool
+	PublishUserinfo bool
+}
+
+func nodemgtSettingsSnapshotOf(st *store.Store) nodemgtSettingsSnapshot {
+	token, _ := st.GetSetting("cf_api_token")
+	email, _ := st.GetSetting("acme_email")
+	listenRaw, _ := st.GetSetting("sub_listen_port")
+	listen, _ := strconv.Atoi(strings.TrimSpace(listenRaw))
+	publicRaw, _ := st.GetSetting("sub_public_port")
+	publicPort, _ := strconv.Atoi(strings.TrimSpace(publicRaw))
+	pathRaw, _ := st.GetSetting("sub_path")
+	hostRaw, _ := st.GetSetting("sub_public_host")
+	reuseRaw, _ := st.GetSetting("sub_reuse_https")
+	legacyCert, _ := st.GetSetting("sub_cert_path")
+	legacyKey, _ := st.GetSetting("sub_key_path")
+	publishName, publishUserinfo := subhttp.MetadataPublishFlags(st)
+	return nodemgtSettingsSnapshot{
+		Token:           token,
+		Email:           email,
+		ListenPort:      listen,
+		PublicPort:      publicPort,
+		Path:            subhttp.NormalizePath(pathRaw),
+		PublicHost:      strings.TrimSpace(hostRaw),
+		ReuseHTTPS:      nodemgtSettingFlag(reuseRaw) || (strings.TrimSpace(legacyCert) != "" && strings.TrimSpace(legacyKey) != ""),
+		PublishName:     publishName,
+		PublishUserinfo: publishUserinfo,
 	}
+}
+
+func nodemgtSettingFlag(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+func nodemgtSettingsChanged(p nodemgtSettingsPatch, prev nodemgtSettingsSnapshot) []string {
+	changed := make([]string, 0, 10)
+	if p.ClearIssuer != nil && *p.ClearIssuer {
+		if strings.TrimSpace(prev.Token) != "" || strings.TrimSpace(prev.Email) != "" {
+			changed = append(changed, "clear_issuer")
+		}
+	} else {
+		if token := strings.TrimSpace(p.CFAPIToken); token != "" && token != strings.TrimSpace(prev.Token) {
+			changed = append(changed, "cf_api_token")
+		}
+		if p.ACMEEmail != nil && strings.TrimSpace(*p.ACMEEmail) != strings.TrimSpace(prev.Email) {
+			changed = append(changed, "acme_email")
+		}
+	}
+	if p.SubListenPort != nil && *p.SubListenPort != prev.ListenPort {
+		changed = append(changed, "sub_listen_port")
+	}
+	if p.SubPublicPort != nil && *p.SubPublicPort != prev.PublicPort {
+		changed = append(changed, "sub_public_port")
+	}
+	if p.SubPath != nil && subhttp.NormalizePath(*p.SubPath) != prev.Path {
+		changed = append(changed, "sub_path")
+	}
+	if p.SubPublicHost != nil && strings.TrimSpace(*p.SubPublicHost) != prev.PublicHost {
+		changed = append(changed, "sub_public_host")
+	}
+	if p.SubReuseHTTPS != nil && *p.SubReuseHTTPS != prev.ReuseHTTPS {
+		changed = append(changed, "sub_reuse_https")
+	}
+	if p.SubPublishName != nil && *p.SubPublishName != prev.PublishName {
+		changed = append(changed, "sub_publish_name")
+	}
+	if p.SubPublishUserinfo != nil && *p.SubPublishUserinfo != prev.PublishUserinfo {
+		changed = append(changed, "sub_publish_userinfo")
+	}
+	return changed
+}
+
+func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	var p nodemgtSettingsPatch
 	if err := req.BindParams(&p); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
 	}
 	st := nodemgtST()
+	prev := nodemgtSettingsSnapshotOf(st)
 	if p.ClearIssuer != nil && *p.ClearIssuer {
 		if err := st.DeleteSetting("cf_api_token"); err != nil {
 			return nil, nodemgtErr(err)
@@ -2124,6 +2228,7 @@ func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 			return nil, nodemgtErr(err)
 		}
 	}
+	changed := nodemgtSettingsChanged(p, prev)
 	if p.SubPublicHost != nil || p.SubReuseHTTPS != nil || restartSub {
 		cfg, err := subhttp.LoadConfig(st)
 		if err != nil {
@@ -2138,7 +2243,9 @@ func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 			}
 		}
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.settings.set", "nodemgt", "")
+	if len(changed) > 0 {
+		_ = nodemgtAudit(ctx, st, "nodemgt.settings.set", "nodemgt", strings.Join(changed, ","), map[string]string{"settings": strings.Join(changed, ",")})
+	}
 	return nodemgtSettingsGet(ctx, req)
 }
 
@@ -2169,7 +2276,7 @@ func nodemgtNodeUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
-	_ = st.Audit(nodemgtActor(ctx), "nodemgt.node.upsert", p.NodeUUID, row.DialStack)
+	_ = nodemgtAudit(ctx, st, "nodemgt.node.upsert", p.NodeUUID, clients.DisplayName(p.NodeUUID), map[string]string{"stack": row.DialStack})
 	nodemgtPush(st, p.NodeUUID)
 	return row, nil
 }

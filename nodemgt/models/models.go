@@ -139,6 +139,7 @@ type NodeUser struct {
 	DeviceLimit       int        `json:"device_limit" gorm:"not null;default:0"`
 	QuotaBytes        int64      `json:"quota_bytes" gorm:"not null;default:0"`
 	UsedBytes         int64      `json:"used_bytes" gorm:"not null;default:0"`
+	LastUsageOp       string     `json:"-" gorm:"column:last_usage_op;type:varchar(96);not null;default:''"`
 	Flow              string     `json:"flow" gorm:"type:varchar(64)"`
 	SharedPoolID      string     `json:"shared_pool_id" gorm:"type:varchar(36);index"`
 	LastSeenAt        *time.Time `json:"last_seen_at"`
