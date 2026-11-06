@@ -8,9 +8,10 @@ if grep -qi komari "$INSTALLER_PATH"; then
     grep -ni komari "$INSTALLER_PATH" >&2
     exit 1
 fi
-if grep -E '#!/bin/bash|\[''\[' "$INSTALLER_PATH" >/dev/null; then
+# [[:class:]] is POSIX, not bash [[.
+if grep -E '#!/bin/bash|[[][[]([^:]|$)' "$INSTALLER_PATH" >/dev/null; then
     echo "FAIL: install-lite.sh still uses bash-only syntax" >&2
-    grep -nE '#!/bin/bash|\[''\[' "$INSTALLER_PATH" >&2
+    grep -nE '#!/bin/bash|[[][[]([^:]|$)' "$INSTALLER_PATH" >&2
     exit 1
 fi
 if ! grep -q '#!/bin/sh' "$INSTALLER_PATH"; then
@@ -27,6 +28,10 @@ if ! grep -q 'SERVICE_NAME="lite-plus"' "$INSTALLER_PATH"; then
 fi
 if ! grep -q 'LEGACY_SERVICE_NAME="lite"' "$INSTALLER_PATH"; then
     echo "FAIL: install-lite.sh does not migrate from lite.service" >&2
+    exit 1
+fi
+if [ "$(grep -c 'GODEBUG=disablethp=1' "$INSTALLER_PATH")" -lt 2 ]; then
+    echo "FAIL: install-lite.sh does not disable transparent huge pages for systemd and procd" >&2
     exit 1
 fi
 if ! grep -q 'download_file' "$INSTALLER_PATH" || ! grep -q 'wget' "$INSTALLER_PATH"; then
@@ -285,6 +290,7 @@ run_procd_unit_case() (
     assert_file_contains "$script" 'USE_PROCD=1'
     assert_file_contains "$script" 'LITE_DEPLOYMENT=linux'
     assert_file_contains "$script" 'LITE_SERVICE_MANAGER=procd'
+    assert_file_contains "$script" 'GODEBUG=disablethp=1'
     assert_file_contains "$script" 'pidfile'
     assert_file_contains "$script" '0.0.0.0:${PORT}'
     assert_file_contains "$ENV_FILE" 'LISTEN_PORT=36888'
