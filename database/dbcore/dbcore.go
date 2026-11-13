@@ -1118,6 +1118,13 @@ func doInitialize() error {
 		&models.ScheduledExec{},
 		&models.ScheduledExecRun{},
 		&models.ClientFirewallIntent{},
+		&models.ClientProtectionConfig{},
+		&models.ProtectionGroup{},
+		&models.ProtectionGroupMember{},
+		&models.ProtectionGroupLeave{},
+		&models.ProtectionBan{},
+		&models.ProtectionRevoke{},
+		&models.ProtectionUpgradeOp{},
 	); err != nil {
 		return fmt.Errorf("failed to create scheduled exec tables: %w", err)
 	}
@@ -1209,6 +1216,10 @@ func cleanupOrphanedClientData(db *gorm.DB) error {
 			"traffic cycle first days":        &models.TrafficCycleFirstDay{},
 			"traffic calibration adjustments": &models.TrafficCalibrationAdjustment{},
 			"firewall intents":                &models.ClientFirewallIntent{},
+			"protection configs":              &models.ClientProtectionConfig{},
+			"protection group members":        &models.ProtectionGroupMember{},
+			"protection group leaves":         &models.ProtectionGroupLeave{},
+			"protection upgrade ops":          &models.ProtectionUpgradeOp{},
 		} {
 			if !tx.Migrator().HasTable(model) {
 				continue
@@ -1217,6 +1228,13 @@ func cleanupOrphanedClientData(db *gorm.DB) error {
 				SELECT 1 FROM clients WHERE clients.uuid = client
 			)`).Delete(model).Error; err != nil {
 				return fmt.Errorf("delete orphaned %s: %w", label, err)
+			}
+		}
+		if tx.Migrator().HasTable(&models.ProtectionBan{}) {
+			if err := tx.Where(`NOT EXISTS (
+				SELECT 1 FROM clients WHERE clients.uuid = source_node
+			)`).Delete(&models.ProtectionBan{}).Error; err != nil {
+				return fmt.Errorf("delete orphaned protection bans: %w", err)
 			}
 		}
 		if err := cleanupOrphanedPingLossNotifications(tx); err != nil {

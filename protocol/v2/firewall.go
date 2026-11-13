@@ -23,40 +23,40 @@ const (
 	FirewallBackendWindows   = "windows"
 	FirewallBackendNone      = "none"
 
-	FirewallStatusOK           = "ok"
-	FirewallStatusError        = "error"
-	FirewallStatusUnsupported  = "unsupported"
-	FirewallStatusRolledBack   = "rolled_back"
-	FirewallKindSnapshot       = "snapshot"
-	FirewallKindApply          = "apply"
-	FirewallKindAdopt          = "adopt"
-	FirewallKindInstall        = "install"
+	FirewallStatusOK          = "ok"
+	FirewallStatusError       = "error"
+	FirewallStatusUnsupported = "unsupported"
+	FirewallStatusRolledBack  = "rolled_back"
+	FirewallKindSnapshot      = "snapshot"
+	FirewallKindApply         = "apply"
+	FirewallKindAdopt         = "adopt"
+	FirewallKindInstall       = "install"
 )
 
 type FirewallRule struct {
-	ID         string `json:"id"`
-	Enabled    bool   `json:"enabled"`
-	Action     string `json:"action"`
-	Protocol   string `json:"protocol"`
-	Port       string `json:"port"`
-	Source     string `json:"source,omitempty"`
-	Stack      string `json:"stack"`
-	Comment    string `json:"comment,omitempty"`
-	Origin     string `json:"origin,omitempty"`
-	Priority   int    `json:"priority"`
-	InboundID  string `json:"inbound_id,omitempty"`
-	HostKey    string `json:"host_key,omitempty"`
+	ID        string `json:"id"`
+	Enabled   bool   `json:"enabled"`
+	Action    string `json:"action"`
+	Protocol  string `json:"protocol"`
+	Port      string `json:"port"`
+	Source    string `json:"source,omitempty"`
+	Stack     string `json:"stack"`
+	Comment   string `json:"comment,omitempty"`
+	Origin    string `json:"origin,omitempty"`
+	Priority  int    `json:"priority"`
+	InboundID string `json:"inbound_id,omitempty"`
+	HostKey   string `json:"host_key,omitempty"`
 }
 
 type FirewallIntent struct {
-	Revision      uint64         `json:"revision"`
-	BlockPing4    bool           `json:"block_ping_v4"`
-	BlockPing6    bool           `json:"block_ping_v6"`
-	DefaultDeny4  bool           `json:"default_deny_v4"`
-	DefaultDeny6  bool           `json:"default_deny_v6"`
-	SshPort       string         `json:"ssh_port,omitempty"`
-	OmitKeep      []string       `json:"omit_keep,omitempty"`
-	Rules         []FirewallRule `json:"rules"`
+	Revision     uint64         `json:"revision"`
+	BlockPing4   bool           `json:"block_ping_v4"`
+	BlockPing6   bool           `json:"block_ping_v6"`
+	DefaultDeny4 bool           `json:"default_deny_v4"`
+	DefaultDeny6 bool           `json:"default_deny_v6"`
+	SshPort      string         `json:"ssh_port,omitempty"`
+	OmitKeep     []string       `json:"omit_keep,omitempty"`
+	Rules        []FirewallRule `json:"rules"`
 }
 
 type FirewallHole struct {

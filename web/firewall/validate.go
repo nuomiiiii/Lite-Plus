@@ -549,6 +549,14 @@ func ownedHostNoise(rule v2.FirewallHostRule) bool {
 	return false
 }
 
+func unsourcedFirewallSource(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "*" || strings.EqualFold(raw, "any") {
+		return true
+	}
+	return raw == "0.0.0.0/0" || raw == "::/0"
+}
+
 func AttachKeepRules(intent v2.FirewallIntent, keep []v2.FirewallRule) v2.FirewallIntent {
 	if !intent.DefaultDeny4 && !intent.DefaultDeny6 {
 		return intent
@@ -556,6 +564,9 @@ func AttachKeepRules(intent v2.FirewallIntent, keep []v2.FirewallRule) v2.Firewa
 	seen := make(map[string]struct{}, len(intent.Rules))
 	for _, rule := range intent.Rules {
 		if !rule.Enabled || !strings.EqualFold(rule.Action, v2.FirewallActionAllow) {
+			continue
+		}
+		if !unsourcedFirewallSource(rule.Source) {
 			continue
 		}
 		seen[rule.Protocol+"/"+rule.Port+"/"+rule.Stack] = struct{}{}

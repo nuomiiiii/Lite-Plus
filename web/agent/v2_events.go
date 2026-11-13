@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -221,6 +222,16 @@ func v2EventCoalesceKey(event v2.Event) string {
 	}
 	if event.Method == v2.MethodAgentFirewallApply || event.Method == v2.MethodAgentFirewallSnapshot || event.Method == v2.MethodAgentFirewallAdopt || event.Method == v2.MethodAgentFirewallInstall {
 		return event.Method
+	}
+	if event.Method == v2.MethodAgentProtectionApplyConfig || event.Method == v2.MethodAgentProtectionPrecheck || event.Method == v2.MethodAgentProtectionUpgrade {
+		return event.Method
+	}
+	if event.Method == v2.MethodAgentProtectionGroupSnapshot {
+		var params v2.ProtectionGroupSnapshotParams
+		if err := bindV2EventParams(event.Params, &params); err != nil || strings.TrimSpace(params.Snapshot.Group) == "" {
+			return ""
+		}
+		return event.Method + ":" + params.Snapshot.Group
 	}
 	if event.Method != v2.MethodAgentPing && event.Method != v2.MethodAgentRoute {
 		return ""

@@ -457,6 +457,63 @@ func TestAttachKeepRules(t *testing.T) {
 	if dup.Rules[1].Port != "3389" || dup.Rules[1].Origin != v2.FirewallOriginKeep {
 		t.Fatalf("disabled user 3389 must still show keep: %+v", dup.Rules[1])
 	}
+	sourced := AttachKeepRules(v2.FirewallIntent{
+		DefaultDeny4: true,
+		Rules: []v2.FirewallRule{
+			{Enabled: true, Action: "allow", Protocol: "tcp", Port: "22", Source: "203.0.113.0/24", Stack: "v4", Origin: v2.FirewallOriginWeb},
+		},
+	}, keep)
+	if len(sourced.Rules) != 3 {
+		t.Fatalf("sourced ssh must not hide unsourced keep: %+v", sourced.Rules)
+	}
+	if sourced.Rules[0].Origin != v2.FirewallOriginKeep || sourced.Rules[0].Port != "22" || sourced.Rules[0].Source != "" {
+		t.Fatalf("keep any ssh must still show: %+v", sourced.Rules[0])
+	}
+	if sourced.Rules[1].Origin != v2.FirewallOriginKeep || sourced.Rules[1].Port != "3389" {
+		t.Fatalf("keep rdp must still show: %+v", sourced.Rules[1])
+	}
+	if sourced.Rules[2].Source != "203.0.113.0/24" || sourced.Rules[2].Port != "22" {
+		t.Fatalf("user cidr ssh must remain: %+v", sourced.Rules[2])
+	}
+	anyCover := AttachKeepRules(v2.FirewallIntent{
+		DefaultDeny4: true,
+		Rules: []v2.FirewallRule{
+			{Enabled: true, Action: "allow", Protocol: "tcp", Port: "22", Source: "0.0.0.0/0", Stack: "v4"},
+		},
+	}, keep)
+	if len(anyCover.Rules) != 2 || anyCover.Rules[0].Port != "3389" || anyCover.Rules[1].Source != "0.0.0.0/0" {
+		t.Fatalf("unsourced any must still hide matching keep: %+v", anyCover.Rules)
+	}
+}
+
+func TestFirewallViewKeepsUnsourcedSSHBesideSourcedAllow(t *testing.T) {
+	keep := RewriteKeepSSH(nil, "22", true, false)
+	keep = DropOmittedKeep(keep, nil)
+	got := AttachKeepRules(v2.FirewallIntent{
+		DefaultDeny4: true,
+		Rules: []v2.FirewallRule{
+			{Enabled: true, Action: "allow", Protocol: "tcp", Port: "22", Source: "198.51.100.0/24", Stack: "v4", Origin: v2.FirewallOriginWeb},
+		},
+	}, keep)
+	if len(got.Rules) != 2 {
+		t.Fatalf("view must show keep any and cidr: %+v", got.Rules)
+	}
+	if got.Rules[0].Origin != v2.FirewallOriginKeep || got.Rules[0].Port != "22" || got.Rules[0].Source != "" {
+		t.Fatalf("keep any must stay visible: %+v", got.Rules[0])
+	}
+	if got.Rules[1].Source != "198.51.100.0/24" || got.Rules[1].Port != "22" {
+		t.Fatalf("cidr rule must stay: %+v", got.Rules[1])
+	}
+	omitted := AttachKeepRules(v2.FirewallIntent{
+		DefaultDeny4: true,
+		OmitKeep:     []string{"ssh"},
+		Rules: []v2.FirewallRule{
+			{Enabled: true, Action: "allow", Protocol: "tcp", Port: "22", Source: "198.51.100.0/24", Stack: "v4", Origin: v2.FirewallOriginWeb},
+		},
+	}, DropOmittedKeep(RewriteKeepSSH(nil, "22", true, false), []string{"ssh"}))
+	if len(omitted.Rules) != 1 || omitted.Rules[0].Source != "198.51.100.0/24" {
+		t.Fatalf("deleting keep must leave only cidr: %+v", omitted.Rules)
+	}
 }
 
 func TestListenHolesSkipsInboundAllows(t *testing.T) {

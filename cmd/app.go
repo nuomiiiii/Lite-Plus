@@ -25,6 +25,7 @@ import (
 	"github.com/nuomiiiii/lite/database/metricstore"
 	"github.com/nuomiiiii/lite/database/models"
 	d_notification "github.com/nuomiiiii/lite/database/notification"
+	protstore "github.com/nuomiiiii/lite/database/protection"
 	"github.com/nuomiiiii/lite/database/tasks"
 	"github.com/nuomiiiii/lite/nodemgt/control"
 	"github.com/nuomiiiii/lite/nodemgt/ops"
@@ -932,6 +933,9 @@ func cleanupScheduledData() {
 	}
 	if err := store.New(dbcore.GetDBInstance()).CleanupExpired(time.Now().UTC()); err != nil {
 		logger.Errorf("server", "Failed to clean nodemgt retention data: %v", err)
+	}
+	if err := protstore.PruneExpiredActivity(time.Now().UTC()); err != nil {
+		logger.Errorf("server", "Failed to clean protection activity: %v", err)
 	}
 }
 

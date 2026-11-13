@@ -111,12 +111,22 @@ func deleteClient(db *gorm.DB, clientUuid string) (bool, error) {
 			"task results":                    &models.TaskResult{},
 			"deployment profile":              &models.ClientDeploymentProfile{},
 			"firewall intent":                 &models.ClientFirewallIntent{},
+			"protection config":               &models.ClientProtectionConfig{},
+			"protection group member":         &models.ProtectionGroupMember{},
+			"protection group leave":          &models.ProtectionGroupLeave{},
+			"protection upgrade ops":          &models.ProtectionUpgradeOp{},
 		} {
 			if !tx.Migrator().HasTable(model) {
 				continue
 			}
 			if err := tx.Where("client = ?", clientUuid).Delete(model).Error; err != nil {
 				return fmt.Errorf("delete client %s: %w", label, err)
+			}
+		}
+
+		if tx.Migrator().HasTable(&models.ProtectionBan{}) {
+			if err := tx.Where("source_node = ?", clientUuid).Delete(&models.ProtectionBan{}).Error; err != nil {
+				return fmt.Errorf("delete client protection bans: %w", err)
 			}
 		}
 
@@ -1335,6 +1345,43 @@ func SetFirewallCapability(uuid string, supported bool, version int) {
 		"firewall_version": version,
 	}).Error; err != nil {
 		logger.Errorf("firewall", "failed to record firewall capability for %s: %v", uuid, err)
+		return
+	}
+	invalidateClientListCache()
+}
+
+var (
+	protectionCapabilityMu   sync.Mutex
+	protectionCapabilitySeen = map[string][2]int{}
+)
+
+func SetProtectionCapability(uuid string, supported bool, version int) {
+	uuid = strings.TrimSpace(uuid)
+	if uuid == "" {
+		return
+	}
+	if !supported {
+		version = 0
+	}
+	flag := 0
+	if supported {
+		flag = 1
+	}
+	next := [2]int{flag, version}
+	protectionCapabilityMu.Lock()
+	prev, exists := protectionCapabilitySeen[uuid]
+	if exists && prev == next {
+		protectionCapabilityMu.Unlock()
+		return
+	}
+	protectionCapabilitySeen[uuid] = next
+	protectionCapabilityMu.Unlock()
+
+	if err := dbcore.GetDBInstance().Model(&models.Client{}).Where("uuid = ?", uuid).Updates(map[string]any{
+		"service_protection":         supported,
+		"service_protection_version": version,
+	}).Error; err != nil {
+		logger.Errorf("protection", "failed to record protection capability for %s: %v", uuid, err)
 		return
 	}
 	invalidateClientListCache()

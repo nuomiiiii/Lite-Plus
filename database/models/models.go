@@ -48,8 +48,10 @@ type Client struct {
 	RemoteControlProtected bool       `json:"-" gorm:"column:remote_control_protected;default:false"`
 	MCPFull                bool       `json:"mcp_full" gorm:"column:mcp_full;default:false"`
 	MCPFullVersion         int        `json:"mcp_full_version" gorm:"column:mcp_full_version;default:0"`
-	Firewall               bool       `json:"firewall" gorm:"column:firewall;default:false"`
-	FirewallVersion        int        `json:"firewall_version" gorm:"column:firewall_version;default:0"`
+	Firewall                   bool `json:"firewall" gorm:"column:firewall;default:false"`
+	FirewallVersion            int  `json:"firewall_version" gorm:"column:firewall_version;default:0"`
+	ServiceProtection          bool `json:"service_protection" gorm:"column:service_protection;default:false"`
+	ServiceProtectionVersion   int  `json:"service_protection_version" gorm:"column:service_protection_version;default:0"`
 	TrafficLimit           int64      `json:"traffic_limit" gorm:"type:bigint"`
 	TrafficLimitType       string     `json:"traffic_limit_type" gorm:"type:varchar(10);default:'sum'"` // 流量阈值类型：sum max min up down
 	TrafficResetDay        *int       `json:"traffic_reset_day,omitempty" gorm:"type:int"`              // nil: follow agent; 0: disabled; 1-31: monthly reset day

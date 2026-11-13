@@ -162,10 +162,33 @@ func TestWebSocketConnectReappliesFirewallIntent(t *testing.T) {
 	if !strings.Contains(setup, "firewall.SyncOnConnect(uuid)") {
 		t.Fatal("agent reconnect must push the panel firewall intent so host persist cannot revive deleted rules")
 	}
+	if !strings.Contains(setup, "protection.SyncOnConnect(uuid)") {
+		t.Fatal("agent reconnect must push protection config and group snapshots")
+	}
 	if strings.Contains(setup, "go firewall.SyncOnConnect") {
 		t.Fatal("reconnect apply must be queued before the first websocket flush")
 	}
 	if strings.Index(setup, "firewall.SyncOnConnect(uuid)") > strings.Index(setup, "pushQueuedV2Events(") {
 		t.Fatal("reconnect apply must be queued before the first websocket flush")
+	}
+}
+
+func TestHTTPPullSyncsProtectionState(t *testing.T) {
+	src, err := os.ReadFile("report_v2.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	start := strings.Index(text, "case v2.MethodAgentPull:")
+	if start < 0 {
+		t.Fatal("agent.pull handler missing")
+	}
+	rest := text[start:]
+	end := strings.Index(rest, "\tdefault:")
+	if end < 0 {
+		t.Fatal("agent.pull handler bounds missing")
+	}
+	if !strings.Contains(rest[:end], "protection.PushPending(uuid)") {
+		t.Fatal("HTTP-only agents must receive pending protection config without replaying an already applied revision")
 	}
 }

@@ -167,6 +167,25 @@ func TestRemoveV2EventQueueClearsOnlyDeletedClient(t *testing.T) {
 	}
 }
 
+func TestProtectionBanEventsDoNotCoalesceByMethod(t *testing.T) {
+	v2EventMu.Lock()
+	original := v2EventQueues
+	v2EventQueues = make(map[string]*v2EventQueue)
+	v2EventMu.Unlock()
+	t.Cleanup(func() {
+		v2EventMu.Lock()
+		v2EventQueues = original
+		v2EventMu.Unlock()
+	})
+
+	EnqueueV2Event("node-a", v2.MethodAgentProtectionBan, v2.ProtectionBanParams{Reason: v2.ProtectionBanReason{IP: "203.0.113.1", EventID: "e1"}})
+	EnqueueV2Event("node-a", v2.MethodAgentProtectionBan, v2.ProtectionBanParams{Reason: v2.ProtectionBanReason{IP: "203.0.113.2", EventID: "e2"}})
+	events := TakeV2Events("node-a", nil, 16)
+	if len(events) != 2 {
+		t.Fatalf("ban increments must not coalesce: %#v", events)
+	}
+}
+
 func TestConfigEventsCoalesceToLatestRevisionPerNode(t *testing.T) {
 	v2EventMu.Lock()
 	original := v2EventQueues

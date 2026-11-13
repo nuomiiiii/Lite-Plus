@@ -25,6 +25,7 @@ import (
 	"github.com/nuomiiiii/lite/web/api"
 	"github.com/nuomiiiii/lite/web/connection"
 	"github.com/nuomiiiii/lite/web/firewall"
+	"github.com/nuomiiiii/lite/web/protection"
 )
 
 func readMaybeCompressedBody(r *http.Request) ([]byte, error) {
@@ -195,6 +196,20 @@ func handleV2RPC(uuid string, req v2.Request, allowWait bool) v2.Response {
 		}
 		firewall.CompleteResult(uuid, params)
 		return v2.Success(req.ID, gin.H{"status": "success"})
+	case v2.MethodAgentProtectionResult:
+		var params v2.ProtectionResultParams
+		if err := bindV2Params(req.Params, &params); err != nil {
+			return v2.Error(req.ID, -32602, "invalid protection result", err.Error())
+		}
+		protection.CompleteResult(uuid, params)
+		return v2.Success(req.ID, gin.H{"status": "success"})
+	case v2.MethodAgentProtectionReport:
+		var params v2.ProtectionReportParams
+		if err := bindV2Params(req.Params, &params); err != nil {
+			return v2.Error(req.ID, -32602, "invalid protection report", err.Error())
+		}
+		protection.CompleteReport(uuid, params)
+		return v2.Success(req.ID, gin.H{"status": "success"})
 	case v2.MethodAgentPull:
 		var params v2.PullParams
 		if err := bindV2Params(req.Params, &params); err != nil {
@@ -202,6 +217,7 @@ func handleV2RPC(uuid string, req v2.Request, allowWait bool) v2.Response {
 		}
 		ingestMCPCapability(uuid, params)
 		refreshPostPresence(uuid)
+		protection.PushPending(uuid)
 		go func() {
 			_ = control.PushPending(store.New(dbcore.GetDBInstance()), uuid)
 			firewall.PushPending(uuid)
@@ -271,6 +287,7 @@ func WebSocketV2RPC(c *gin.Context) {
 		notifierOffline(uuid, conn.ID)
 	}()
 	firewall.SyncOnConnect(uuid)
+	protection.SyncOnConnect(uuid)
 	if !pushQueuedV2Events(conn, uuid) {
 		return
 	}
