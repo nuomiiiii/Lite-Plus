@@ -7,7 +7,7 @@
 
 **Lite-Plus** 是从 [Lite](https://github.com/nuomiiiii/Lite) 独立出来的自托管监控与节点管理面板。服务端提供 Web 后台，配套 [Lite-Plus-agent](https://github.com/nuomiiiii/Lite-Plus-agent) 采集节点状态、探测延迟和回程线路；管理员授权后可远程终端、管文件、跑任务。在此之上，Lite-Plus 还管节点上的入站 / 出站 / 路由 / 用户 / 订阅，以及主机入站防火墙。
 
-**当前正式版：Lite-Plus [`0.2.0`](https://github.com/nuomiiiii/Lite-Plus/releases/tag/0.2.0) · 配套 Agent [`0.0.3.3`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.0.3.3) · 默认主题 [`1.3.0`](https://github.com/nuomiiiii/Lite-theme/releases/tag/v1.3.0)**
+**当前正式版：Lite-Plus [`0.2.0`](https://github.com/nuomiiiii/Lite-Plus/releases/tag/0.2.0) · 配套 Agent [`0.2.0.0`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.2.0.0) · 默认主题 [`1.3.0`](https://github.com/nuomiiiii/Lite-theme/releases/tag/v1.3.0)**
 
 [使用手册](https://nuomiiiii.github.io/Lite-document/) · [快速开始](#快速开始) · [功能概览](#功能概览) · [从 Lite 升级](#从-lite-升级) · [Agent](#agent-与远程管理) · [更新日志](https://github.com/nuomiiiii/Lite-Plus/releases)
 
@@ -30,7 +30,7 @@
 | 节点监控 | CPU、内存、磁盘、网络、负载、连接数、运行时间、在线状态与实时流量 |
 | 节点管理 | 入站、出站、路由、转发、用户、套餐、证书和订阅，保存后下发到配套 Agent。转发把线路机入站转到落地入站，多个线路可共用落地。入站支持 VLESS / VMess / Trojan / Shadowsocks / HTTP / Hysteria2 / TUIC / AnyTLS，以及 TLS / Reality；Hysteria2、TUIC、AnyTLS 使用 sing-box。可从分享链接或已有入站导入出站 |
 | 主机防火墙 | 按服务器管理本机入站规则、禁止 ping、默认拒绝。Linux 支持 nft / iptables / ufw / firewalld，Windows 走系统防火墙。规则保存在主控，节点重装后会再下发 |
-| 服务防护 | 防火墙节点页按路径扫描、请求频率、SSH 密码试错封禁来源 IP；可只观察、设白名单，联动组同步封禁。需配套 Agent 0.0.3.3 |
+| 服务防护 | 防火墙节点页按路径扫描、请求频率、SSH 密码试错封禁来源 IP；可只观察、设白名单，联动组同步封禁。需配套 Agent 0.2.0.0 |
 | 仪表盘 | 预制布局、模块开关与排序、实时与历史刷新、流量排行、每日明细、按到期日汇总的续费日历 |
 | 成本中心 | 日/月/年费用、资费版本、附加费用、剩余价值、到期提醒、多币种汇总 |
 | 延迟与回程 | IPv4/IPv6 探测、历史曲线、丢包与抖动、电信 / 移动 / 联通回程识别 |
@@ -107,7 +107,7 @@ chmod +x Lite-linux-amd64
 
 ## Agent 与远程管理
 
-Lite-Plus 配套 [Lite-Plus-agent `0.0.3.3`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.0.3.3)。先在后台添加节点，再打开该节点的「节点配置 → 部署指令」，复制完整命令到目标服务器执行。新安装和 Docker 重建都用该节点自己的部署指令。
+Lite-Plus 配套 [Lite-Plus-agent `0.2.0.0`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.2.0.0)。先在后台添加节点，再打开该节点的「节点配置 → 部署指令」，复制完整命令到目标服务器执行。新安装和 Docker 重建都用该节点自己的部署指令。
 
 远程终端、文件管理和远程执行需要同时开启 Lite-Plus「系统设置 → 通用 → 允许远程管理」与 Agent 本地 `--enable-remote-control`，新安装默认关闭。进入远程功能时，已启用通行密钥的账号可用通行密钥验证；已启用两步验证但未使用通行密钥时输入当前验证码；未启用时重新输入管理员密码。浏览器远程终端单次最长 6 小时，空闲 30 分钟会结束。
 
