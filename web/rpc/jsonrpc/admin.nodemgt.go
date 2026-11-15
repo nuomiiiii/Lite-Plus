@@ -660,6 +660,9 @@ func inboundView(row models.Inbound) map[string]any {
 		"share_strategy":       s.ShareStrategy,
 		"firewall_linked":      firewall.InboundLinked(row.NodeUUID, row.ID),
 	}
+	if strings.EqualFold(row.Protocol, "shadowsocks") {
+		view["ss_network"] = inboundcfg.EffectiveSSNetwork(s)
+	}
 	if strings.EqualFold(row.Core, models.CoreSingBox) && inboundcfg.InboundListensUDP(row.Protocol, s) {
 		view["udp_fragment"] = inboundcfg.EffectiveUDPFragment(row.Protocol, s)
 	}

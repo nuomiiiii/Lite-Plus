@@ -35,6 +35,30 @@ func TestResolveInboundSortIndexKeepsZero(t *testing.T) {
 	}
 }
 
+func TestInboundViewUsesSSNetwork(t *testing.T) {
+	both := inboundView(models.Inbound{
+		Protocol:     "shadowsocks",
+		SettingsJSON: `{"transport":"tcp","ss_network":"tcp,udp","ss_method":"aes-128-gcm"}`,
+	})
+	if both["transport"] != "tcp,udp" || both["ss_network"] != "tcp,udp" {
+		t.Fatalf("ss_network tcp,udp, got transport=%v ss_network=%v", both["transport"], both["ss_network"])
+	}
+	tcp := inboundView(models.Inbound{
+		Protocol:     "shadowsocks",
+		SettingsJSON: `{"transport":"tcp","ss_network":"tcp"}`,
+	})
+	if tcp["transport"] != "tcp" || tcp["ss_network"] != "tcp" {
+		t.Fatalf("ss_network tcp, got transport=%v ss_network=%v", tcp["transport"], tcp["ss_network"])
+	}
+	vless := inboundView(models.Inbound{
+		Protocol:     "vless",
+		SettingsJSON: `{"transport":"tcp"}`,
+	})
+	if _, ok := vless["ss_network"]; ok {
+		t.Fatalf("vless must not expose ss_network")
+	}
+}
+
 func TestOutboundViewUsesSSNetwork(t *testing.T) {
 	udp := outboundView(models.Outbound{
 		Protocol:     "shadowsocks",

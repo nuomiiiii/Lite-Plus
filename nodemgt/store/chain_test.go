@@ -620,6 +620,45 @@ func TestManualOutboundAllowsChainLanding(t *testing.T) {
 	}))
 }
 
+func TestForwardChainCopiesLandingSSNetwork(t *testing.T) {
+	st := testDB(t)
+	landing := testInbound("land", "US", "shadowsocks", "land.example.com", 8388)
+	landing.SettingsJSON = `{"share_strategy":"other","public_host":"land.example.com","transport":"tcp","ss_network":"tcp,udp","ss_method":"aes-128-gcm","security":"none"}`
+	front := testInbound("front", "HK", "vless", "a.example.com", 8443)
+	require.NoError(t, st.UpsertInbound(landing))
+	require.NoError(t, st.UpsertInbound(front))
+	_, _, err := st.UpsertChain(ChainUpsert{LandingInboundIDs: []string{landing.ID}, SourceInboundIDs: []string{front.ID}})
+	require.NoError(t, err)
+	outbounds, err := st.ListOutbounds("front")
+	require.NoError(t, err)
+	require.Len(t, outbounds, 1)
+	require.Equal(t, "tcp,udp", settingsString(outbounds[0].SettingsJSON, "ss_network"))
+	require.Equal(t, "tcp", settingsString(outbounds[0].SettingsJSON, "transport"))
+
+	tcpOnly := testInbound("land-tcp", "US-TCP", "shadowsocks", "tcp.example.com", 8389)
+	tcpOnly.SettingsJSON = `{"share_strategy":"other","public_host":"tcp.example.com","transport":"tcp","ss_network":"tcp","ss_method":"aes-128-gcm","security":"none"}`
+	frontTCP := testInbound("front-tcp", "HK-TCP", "vless", "b.example.com", 8444)
+	require.NoError(t, st.UpsertInbound(tcpOnly))
+	require.NoError(t, st.UpsertInbound(frontTCP))
+	_, _, err = st.UpsertChain(ChainUpsert{LandingInboundIDs: []string{tcpOnly.ID}, SourceInboundIDs: []string{frontTCP.ID}})
+	require.NoError(t, err)
+	got, err := st.ListOutbounds("front-tcp")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "tcp", settingsString(got[0].SettingsJSON, "ss_network"))
+
+	legacy := testInbound("land-legacy", "US-L", "shadowsocks", "legacy.example.com", 8390)
+	frontLegacy := testInbound("front-legacy", "HK-L", "vless", "c.example.com", 8445)
+	require.NoError(t, st.UpsertInbound(legacy))
+	require.NoError(t, st.UpsertInbound(frontLegacy))
+	_, _, err = st.UpsertChain(ChainUpsert{LandingInboundIDs: []string{legacy.ID}, SourceInboundIDs: []string{frontLegacy.ID}})
+	require.NoError(t, err)
+	got, err = st.ListOutbounds("front-legacy")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "tcp,udp", settingsString(got[0].SettingsJSON, "ss_network"))
+}
+
 func TestForwardChainAllowsLandingWithManualRoute(t *testing.T) {
 	st := testDB(t)
 	landing := testInbound("land", "US", "vless", "land.example.com", 443)

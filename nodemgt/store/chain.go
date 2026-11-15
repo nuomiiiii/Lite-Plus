@@ -1303,7 +1303,7 @@ func (s *Store) outboundSettingsFromLanding(chainID string, landing *models.Inbo
 			method = inboundcfg.DefaultSSMethod()
 		}
 		item["ss_method"] = method
-		item["ss_network"] = inboundcfg.NormalizeSSNetwork(transport)
+		item["ss_network"] = inboundcfg.EffectiveSSNetwork(cfg)
 		item["transport"] = "tcp"
 	}
 	raw, err := json.Marshal(item)
