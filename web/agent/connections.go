@@ -33,15 +33,22 @@ func GetConnectedClient(uuid string) *connection.SafeConn {
 
 // IsPresent matches dashboard online: WebSocket or a live HTTP presence TTL.
 func IsPresent(uuid string) bool {
+	_, ok := ActiveConnectionID(uuid)
+	return ok
+}
+
+// ActiveConnectionID returns the active session ID for a reachable node,
+// preferring a live WebSocket connection over an HTTP presence TTL.
+func ActiveConnectionID(uuid string) (int64, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
-	if _, ok := connectedClients[uuid]; ok {
-		return true
+	if conn, ok := connectedClients[uuid]; ok && conn != nil {
+		return conn.ID, true
 	}
 	if presence, ok := presenceOnly[uuid]; ok && presence.expire.After(time.Now()) {
-		return true
+		return presence.id, true
 	}
-	return false
+	return 0, false
 }
 
 func SetConnectedClients(uuid string, conn *connection.SafeConn) {

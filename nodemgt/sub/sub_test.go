@@ -767,6 +767,34 @@ func TestHysteria2AndTUICShareLinksRoundTrip(t *testing.T) {
 	if !ok || gotTuic.Protocol != "tuic" || gotTuic.UUID != "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" || gotTuic.Password != "tuic-secret" {
 		t.Fatalf("parse tuic %+v ok=%v from %s", gotTuic, ok, tuicLink)
 	}
+
+	//Even if Fingerprint is set on QUIC nodes or Inbound SettingsJSON, sing-box subscription MUST NOT emit uTLS,
+	//and Assemble must fall back to cert domain for SNI when dialing an IP with an issued cert.
+	hy2.Fingerprint = "edge"
+	tuic.Fingerprint = "chrome"
+	singJSON, _, err := Render("sing-box", []Node{hy2, tuic}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(singJSON, `"utls"`) {
+		t.Fatalf("sing-box subscription must not emit utls on hysteria2/tuic:\n%s", singJSON)
+	}
+
+	assembled := AssembleWithCerts(
+		models.NodeUser{Username: "alice"},
+		[]models.Inbound{{
+			ID: "hy2-ip", NodeUUID: "n1", Name: "HY2-IP", Protocol: "hysteria2",
+			Listen: "0.0.0.0", Port: 443, Enabled: true,
+			SettingsJSON: `{"share_strategy":"other","public_host":"203.0.113.99","security":"tls","transport":"quic","cert_id":"c1","fingerprint":"edge"}`,
+		}},
+		[]models.Credential{{UUID: "u1", SecretMaterial: "pw", Enabled: true}},
+		map[string]bool{"hy2-ip": true},
+		nil,
+		[]models.Certificate{{ID: "c1", NodeUUID: "n1", Domain: "hk.example.com", Status: models.CertIssued}},
+	)
+	if len(assembled) != 1 || assembled[0].Host != "203.0.113.99" || assembled[0].SNI != "hk.example.com" || assembled[0].Fingerprint != "" {
+		t.Fatalf("expected IP host + cert SNI fallback + empty QUIC fingerprint, got %+v", assembled)
+	}
 }
 
 func TestClashTuicIncludesPassword(t *testing.T) {

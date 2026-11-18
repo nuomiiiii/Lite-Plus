@@ -852,6 +852,7 @@ func outboundView(row models.Outbound) map[string]any {
 		Transport        string `json:"transport"`
 		Security         string `json:"security"`
 		SNI              string `json:"sni"`
+		ALPN             string `json:"alpn"`
 		Fingerprint      string `json:"fingerprint"`
 		WSPath           string `json:"ws_path"`
 		WSHost           string `json:"ws_host"`
@@ -891,6 +892,7 @@ func outboundView(row models.Outbound) map[string]any {
 		"transport":          transport,
 		"security":           s.Security,
 		"sni":                s.SNI,
+		"alpn":               s.ALPN,
 		"fingerprint":        s.Fingerprint,
 		"ws_path":            s.WSPath,
 		"ws_host":            s.WSHost,
@@ -923,6 +925,7 @@ func nodemgtOutboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 		Transport        string `json:"transport"`
 		Security         string `json:"security"`
 		SNI              string `json:"sni"`
+		ALPN             string `json:"alpn"`
 		Fingerprint      string `json:"fingerprint"`
 		WSPath           string `json:"ws_path"`
 		WSHost           string `json:"ws_host"`
@@ -947,6 +950,7 @@ func nodemgtOutboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 		p.Core = models.CoreSingBox
 		if strings.EqualFold(p.Protocol, "hysteria2") || strings.EqualFold(p.Protocol, "tuic") {
 			p.Transport = "quic"
+			p.Fingerprint = ""
 		} else {
 			p.Transport = "tcp"
 		}
@@ -981,6 +985,7 @@ func nodemgtOutboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 		"transport":          p.Transport,
 		"security":           p.Security,
 		"sni":                p.SNI,
+		"alpn":               p.ALPN,
 		"fingerprint":        p.Fingerprint,
 		"ws_path":            p.WSPath,
 		"ws_host":            p.WSHost,

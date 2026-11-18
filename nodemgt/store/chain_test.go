@@ -674,3 +674,63 @@ func TestForwardChainAllowsLandingWithManualRoute(t *testing.T) {
 	_, _, err := st.UpsertChain(ChainUpsert{LandingInboundIDs: []string{landing.ID}, SourceInboundIDs: []string{front.ID}})
 	require.NoError(t, err)
 }
+
+func TestForwardChainHysteria2ToHysteria2OmitsUTLSAndInheritsCertSNIAndALPN(t *testing.T) {
+	st := testDB(t)
+	certRow := &models.Certificate{
+		NodeUUID:    "land-hy2",
+		Domain:      "*.example.com",
+		ShareDomain: "hk.example.com",
+		Source:      "root",
+		Status:      models.CertIssued,
+	}
+	require.NoError(t, st.UpsertCert(certRow))
+
+	landingSettings, _ := json.Marshal(map[string]any{
+		"share_strategy": "other",
+		"public_host":    "203.0.113.88",
+		"transport":      "quic",
+		"security":       "tls",
+		"cert_id":        certRow.ID,
+		"alpn":           "h3",
+		"fingerprint":    "edge",
+	})
+	landing := &models.Inbound{
+		NodeUUID:     "land-hy2",
+		Core:         models.CoreSingBox,
+		Name:         "Landing-HY2",
+		Protocol:     "hysteria2",
+		Listen:       "0.0.0.0",
+		Port:         8443,
+		SettingsJSON: string(landingSettings),
+		Enabled:      true,
+	}
+	source := &models.Inbound{
+		NodeUUID:     "src-hy2",
+		Core:         models.CoreSingBox,
+		Name:         "Source-HY2",
+		Protocol:     "hysteria2",
+		Listen:       "0.0.0.0",
+		Port:         9443,
+		SettingsJSON: `{"transport":"quic","security":"tls","sni":"src.example.com"}`,
+		Enabled:      true,
+	}
+	require.NoError(t, st.UpsertInbound(landing))
+	require.NoError(t, st.UpsertInbound(source))
+
+	_, _, err := st.UpsertChain(ChainUpsert{
+		Name:              "HY2 Relay",
+		LandingInboundIDs: []string{landing.ID},
+		SourceInboundIDs:  []string{source.ID},
+	})
+	require.NoError(t, err)
+
+	outs, err := st.ListOutbounds("src-hy2")
+	require.NoError(t, err)
+	require.Len(t, outs, 1)
+	require.Equal(t, "hysteria2", outs[0].Protocol)
+	require.Equal(t, "203.0.113.88", settingsString(outs[0].SettingsJSON, "address"))
+	require.Equal(t, "hk.example.com", settingsString(outs[0].SettingsJSON, "sni"))
+	require.Equal(t, "h3", settingsString(outs[0].SettingsJSON, "alpn"))
+	require.Equal(t, "", settingsString(outs[0].SettingsJSON, "fingerprint"))
+}

@@ -244,7 +244,9 @@ func handleV2RPCWithPresence(uuid string, req v2.Request, allowWait, markPresenc
 			return v2.Error(req.ID, -32602, "invalid pull params", err.Error())
 		}
 		ingestMCPCapability(uuid, params)
-		refreshPostPresence(uuid)
+		if markPresence {
+			refreshPostPresence(uuid)
+		}
 		protection.PushPending(uuid)
 		go func() {
 			_ = control.PushPending(store.New(dbcore.GetDBInstance()), uuid)
@@ -309,9 +311,17 @@ func WebSocketV2RPC(c *gin.Context) {
 		go oldConn.Close()
 	}
 	agent_runtime.SetConnectedClients(uuid, conn)
-	go notifierOnline(uuid, conn.ID)
+	if agent_runtime.GetConnectedClient(uuid) != conn {
+		return
+	}
+	clearPostPresence(uuid)
+	notifierOnline(uuid, conn.ID)
 	defer func() {
 		agent_runtime.DeleteClientConditionally(uuid, conn)
+		if liveID, live := agent_runtime.ActiveConnectionID(uuid); live {
+			notifier.RebindOnlineConnection(uuid, conn.ID, liveID)
+			return
+		}
 		notifierOffline(uuid, conn.ID)
 	}()
 	firewall.SyncOnConnect(uuid)
@@ -388,10 +398,7 @@ func clientUUIDFromContext(c *gin.Context) (string, bool) {
 }
 
 func notifierOnline(uuid string, connID int64) {
-	go func() {
-		defer func() { _ = recover() }()
-		notifier.OnlineNotification(uuid, connID)
-	}()
+	notifier.NotifyOnlineAsync(uuid, connID)
 }
 
 func notifierOffline(uuid string, connID int64) {

@@ -1346,6 +1346,14 @@ func (s *Store) outboundSettingsFromLanding(chainID string, landing *models.Inbo
 	if security == "" {
 		security = inboundcfg.DefaultSecurity(landing.Protocol)
 	}
+	sni := inboundcfg.ShareSNI(cfg)
+	if sni == "" && strings.EqualFold(security, "tls") {
+		sni = s.certDomain(landing.NodeUUID, cfg.CertID)
+	}
+	fingerprint := cfg.Fingerprint
+	if strings.EqualFold(landing.Protocol, "hysteria2") || strings.EqualFold(landing.Protocol, "tuic") {
+		fingerprint = ""
+	}
 	item := map[string]any{
 		"address":            host,
 		"port":               port,
@@ -1356,8 +1364,9 @@ func (s *Store) outboundSettingsFromLanding(chainID string, landing *models.Inbo
 		"domain_strategy":    "AsIs",
 		"transport":          transport,
 		"security":           security,
-		"sni":                inboundcfg.ShareSNI(cfg),
-		"fingerprint":        cfg.Fingerprint,
+		"sni":                sni,
+		"alpn":               strings.TrimSpace(cfg.ALPN),
+		"fingerprint":        fingerprint,
 		"ws_path":            cfg.WSPath,
 		"ws_host":            cfg.WSHost,
 		"grpc_service":       cfg.GRPCService,

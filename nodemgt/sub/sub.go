@@ -216,6 +216,13 @@ func assembleWithAddrs(user models.NodeUser, inbounds []models.Inbound, creds []
 		flow := shareFlow(in, cfg, user, transport, security)
 		path, hostHeader, serviceName, mode := shareTransportFields(transport, cfg)
 		sni := inboundcfg.ShareSNI(cfg)
+		if sni == "" && security == "tls" {
+			sni = certDomains.domainFor(in.NodeUUID, cfg.CertID)
+		}
+		fingerprint := cfg.Fingerprint
+		if strings.EqualFold(in.Protocol, "hysteria2") || strings.EqualFold(in.Protocol, "tuic") {
+			fingerprint = ""
+		}
 		sharePass := password
 		cipher := cfg.SSMethod
 		if strings.EqualFold(in.Protocol, "shadowsocks") {
@@ -244,7 +251,7 @@ func assembleWithAddrs(user models.NodeUser, inbounds []models.Inbound, creds []
 			HostHeader:  hostHeader,
 			SNI:         sni,
 			Flow:        flow,
-			Fingerprint: cfg.Fingerprint,
+			Fingerprint: fingerprint,
 			PublicKey:   cfg.RealityPublicKey,
 			ShortID:     cfg.RealityShortID,
 			SpiderX:     cfg.SpiderX,
@@ -618,7 +625,7 @@ func RenderSingBox(nodes []Node, extra []string) (string, error) {
 			if n.SNI != "" {
 				tls["server_name"] = n.SNI
 			}
-			if n.Fingerprint != "" {
+			if n.Fingerprint != "" && kind != "hysteria2" && kind != "tuic" {
 				tls["utls"] = map[string]any{"enabled": true, "fingerprint": n.Fingerprint}
 			}
 			if n.ALPN != "" {
