@@ -7,7 +7,7 @@
 
 **Lite-Plus** 是从 [Lite](https://github.com/nuomiiiii/Lite) 独立出来的自托管监控与节点管理面板。服务端提供 Web 后台，配套 [Lite-Plus-agent](https://github.com/nuomiiiii/Lite-Plus-agent) 采集节点状态、探测延迟和回程线路；管理员授权后可远程终端、管文件、跑任务。在此之上，Lite-Plus 还管节点上的入站 / 出站 / 路由 / 用户 / 订阅，以及主机入站防火墙。
 
-**当前正式版：Lite-Plus [`0.2.0`](https://github.com/nuomiiiii/Lite-Plus/releases/tag/0.2.0) · 配套 Agent [`0.2.0.0`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.2.0.0) · 默认主题 [`1.3.0`](https://github.com/nuomiiiii/Lite-theme/releases/tag/v1.3.0)**
+**当前正式版：Lite-Plus [`0.2.1`](https://github.com/nuomiiiii/Lite-Plus/releases/tag/0.2.1) · 配套 Agent [`0.2.0.0`](https://github.com/nuomiiiii/Lite-Plus-agent/releases/tag/0.2.0.0) · 默认主题 [`1.3.1`](https://github.com/nuomiiiii/Lite-theme/releases/tag/v1.3.1)**
 
 [使用手册](https://nuomiiiii.github.io/Lite-document/) · [快速开始](#快速开始) · [功能概览](#功能概览) · [从 Lite 升级](#从-lite-升级) · [Agent](#agent-与远程管理) · [更新日志](https://github.com/nuomiiiii/Lite-Plus/releases)
 
@@ -77,7 +77,7 @@ docker run -d \
   ghcr.io/nuomiiiii/lite-plus:latest
 ```
 
-固定版本时把标签改成 `ghcr.io/nuomiiiii/lite-plus:0.2.0`。镜像包含 `linux/amd64` 和 `linux/arm64`。
+固定版本时把标签改成 `ghcr.io/nuomiiiii/lite-plus:0.2.1`。镜像包含 `linux/amd64` 和 `linux/arm64`。
 
 更新前先备份 `data`，再拉新镜像并用原来的端口和数据挂载重建容器：
 

@@ -273,20 +273,37 @@ func SyncOnConnect(uuid string) {
 }
 
 func PushPending(uuid string) {
+	uuid = strings.TrimSpace(uuid)
+	if uuid == "" {
+		if !remote.RemoteManagementEnabled() {
+			return
+		}
+		uuids, err := protstore.DueClientUUIDs()
+		if err != nil {
+			return
+		}
+		for _, id := range uuids {
+			if agent_runtime.GetConnectedClient(id) == nil && !agent_runtime.IsAgentOnline(id) {
+				continue
+			}
+			syncProtection(id, false)
+		}
+		return
+	}
 	syncProtection(uuid, false)
 }
 
 func syncProtection(uuid string, force bool) {
-	row, err := protstore.GetConfig(uuid)
-	if err != nil || row == nil {
-		return
-	}
 	client, err := clients.GetClientByUUID(uuid)
 	if err != nil || !NodeSupports(client) {
 		return
 	}
-	cfg := protstore.ConfigFromRow(row)
-	if row.Revision > 0 && (force || needsProtectionApply(*row)) {
+	row, err := protstore.GetConfig(uuid)
+	if err != nil {
+		return
+	}
+	if row != nil && row.Revision > 0 && (force || needsProtectionApply(*row)) {
+		cfg := protstore.ConfigFromRow(row)
 		if err := DispatchApply(uuid, cfg, false); err != nil {
 			log.Printf("protection sync apply %s: %v", uuid, err)
 			status := protstore.DeliveryQueued

@@ -1,17 +1,50 @@
 package secretcrypt
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/nuomiiiii/lite/utils/instancekey"
 )
 
 const Prefix = "enc:v1:"
+
+var (
+	aeadMu    sync.RWMutex
+	cachedKey []byte
+	cachedGCM cipher.AEAD
+)
+
+func aeadForKey(key []byte) (cipher.AEAD, error) {
+	aeadMu.RLock()
+	if cachedGCM != nil && bytes.Equal(cachedKey, key) {
+		gcm := cachedGCM
+		aeadMu.RUnlock()
+		return gcm, nil
+	}
+	aeadMu.RUnlock()
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	aeadMu.Lock()
+	cachedKey = append(cachedKey[:0], key...)
+	cachedGCM = gcm
+	aeadMu.Unlock()
+	return gcm, nil
+}
 
 func Seal(plain string) (string, error) {
 	if plain == "" {
@@ -24,11 +57,7 @@ func Seal(plain string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := aeadForKey(key)
 	if err != nil {
 		return "", err
 	}
@@ -55,11 +84,7 @@ func Open(stored string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("nodemgt secret is unreadable")
 	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := aeadForKey(key)
 	if err != nil {
 		return "", err
 	}

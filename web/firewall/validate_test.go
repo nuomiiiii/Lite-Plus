@@ -23,6 +23,36 @@ func TestNormalizeRuleRejectsDualStack(t *testing.T) {
 	}
 }
 
+func TestNormalizeRuleValidatesID(t *testing.T) {
+	valid, err := NormalizeRule(v2.FirewallRule{
+		ID:       "rule_01:inbound-443.tcp",
+		Action:   "allow",
+		Protocol: "tcp",
+		Port:     "443",
+		Stack:    "v4",
+	})
+	if err != nil || valid.ID != "rule_01:inbound-443.tcp" {
+		t.Fatalf("valid rule ID rejected: %+v %v", valid, err)
+	}
+	for _, badID := range []string{
+		"rule with spaces",
+		"rule;drop",
+		"../evil",
+		"rule\ninjection",
+		strings.Repeat("a", 65),
+	} {
+		if _, err := NormalizeRule(v2.FirewallRule{
+			ID:       badID,
+			Action:   "allow",
+			Protocol: "tcp",
+			Port:     "443",
+			Stack:    "v4",
+		}); !errors.Is(err, ErrInvalidRule) {
+			t.Fatalf("expected invalid rule ID %q to fail with ErrInvalidRule, got %v", badID, err)
+		}
+	}
+}
+
 func TestNormalizeRuleAllPorts(t *testing.T) {
 	rule, err := NormalizeRule(v2.FirewallRule{
 		Action:   "allow",

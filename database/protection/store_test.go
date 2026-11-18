@@ -6,8 +6,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/nuomiiiii/lite/cmd/flags"
+	"github.com/nuomiiiii/lite/database/dbcore"
+	"github.com/nuomiiiii/lite/database/models"
+	"github.com/nuomiiiii/lite/utils/instancekey"
 	v2 "github.com/nuomiiiii/lite/protocol/v2"
 )
+
+func TestMain(m *testing.M) {
+	cleanup := instancekey.SetupTempFileForTest()
+	flags.DatabaseType = flags.DatabaseTypeSQLite
+	flags.DatabaseFile = "file:protection_store_test?mode=memory&cache=shared"
+	db := dbcore.GetDBInstance()
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(1)
+	}
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
+}
 
 func TestBumpGroupRevisionIsAtomicAndFieldLocal(t *testing.T) {
 	raw, err := os.ReadFile("store.go")
@@ -121,6 +139,117 @@ func TestListRecentBansKeepsExpiredRows(t *testing.T) {
 	save := extractStoreFunc(string(raw), "func SaveReport")
 	if !strings.Contains(save, "pruneReportHits") {
 		t.Fatal("observe hits must use the same seven-day window")
+	}
+}
+
+func TestDeleteGroupAndPruneExpiredActivityInSQLite(t *testing.T) {
+	db := dbcore.GetDBInstance()
+	now := time.Date(2026, 11, 18, 8, 0, 0, 0, time.UTC)
+	groupID := "grp-" + uuid.NewString()[:8]
+	nodeUUID := "node-" + uuid.NewString()[:8]
+
+	if err := db.Create(&models.ProtectionGroup{
+		ID:        groupID,
+		Name:      "Shared Group",
+		Enabled:   true,
+		Revision:  3,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProtectionGroupMember{
+		GroupID:   groupID,
+		Client:    nodeUUID,
+		UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProtectionGroupLeave{
+		Client:    nodeUUID,
+		GroupID:   groupID,
+		CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProtectionRevoke{
+		GroupID:  groupID,
+		IP:       "198.51.100.1",
+		Revision: 3,
+		ResetAt:  now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SaveConfig(nodeUUID, v2.ProtectionConfig{
+		Enabled: true,
+		Policies: []v2.ProtectionPolicy{
+			{ID: "p1", Name: "ssh", GroupID: groupID},
+			{ID: "p2", Name: "local", GroupID: ""},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test PruneExpiredActivity on stale (>30d) revokes & finished upgrade ops while preserving fresh/active rows.
+	otherGroup := "grp-keep-" + uuid.NewString()[:8]
+	staleAt := now.Add(-31 * 24 * time.Hour)
+	freshAt := now.Add(-5 * 24 * time.Hour)
+	if err := db.Create(&models.ProtectionRevoke{GroupID: otherGroup, IP: "203.0.113.1", Revision: 1, ResetAt: staleAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ProtectionRevoke{GroupID: otherGroup, IP: "203.0.113.2", Revision: 2, ResetAt: freshAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	staleOpID := "op-stale-" + uuid.NewString()[:8]
+	activeOpID := "op-active-" + uuid.NewString()[:8]
+	if err := SaveUpgradeOp(&models.ProtectionUpgradeOp{ID: staleOpID, Client: nodeUUID, Phase: "done", StartedAt: staleAt, FinishedAt: &staleAt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveUpgradeOp(&models.ProtectionUpgradeOp{ID: activeOpID, Client: nodeUUID, Phase: "running", StartedAt: staleAt, FinishedAt: nil}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = DeleteClient(nodeUUID)
+		_ = db.Where("group_id = ?", otherGroup).Delete(&models.ProtectionRevoke{}).Error
+		_ = db.Where("id IN ?", []string{staleOpID, activeOpID}).Delete(&models.ProtectionUpgradeOp{}).Error
+	})
+
+	if err := PruneExpiredActivity(now); err != nil {
+		t.Fatalf("PruneExpiredActivity: %v", err)
+	}
+	var staleRevokeCount, freshRevokeCount int64
+	db.Model(&models.ProtectionRevoke{}).Where("group_id = ? AND ip = ?", otherGroup, "203.0.113.1").Count(&staleRevokeCount)
+	db.Model(&models.ProtectionRevoke{}).Where("group_id = ? AND ip = ?", otherGroup, "203.0.113.2").Count(&freshRevokeCount)
+	if staleRevokeCount != 0 || freshRevokeCount != 1 {
+		t.Fatalf("prune revokes: stale=%d (want 0), fresh=%d (want 1)", staleRevokeCount, freshRevokeCount)
+	}
+	var staleOpCount, activeOpCount int64
+	db.Model(&models.ProtectionUpgradeOp{}).Where("id = ?", staleOpID).Count(&staleOpCount)
+	db.Model(&models.ProtectionUpgradeOp{}).Where("id = ?", activeOpID).Count(&activeOpCount)
+	if staleOpCount != 0 || activeOpCount != 1 {
+		t.Fatalf("prune upgrade ops: stale=%d (want 0), active=%d (want 1)", staleOpCount, activeOpCount)
+	}
+
+	// Test DeleteGroup cleans members, leaves, revokes, group row, and clears GroupID in client policy JSON.
+	if err := DeleteGroup(groupID); err != nil {
+		t.Fatalf("DeleteGroup: %v", err)
+	}
+	var memberCount, leaveCount, groupRevokeCount, groupCount int64
+	db.Model(&models.ProtectionGroupMember{}).Where("group_id = ?", groupID).Count(&memberCount)
+	db.Model(&models.ProtectionGroupLeave{}).Where("group_id = ?", groupID).Count(&leaveCount)
+	db.Model(&models.ProtectionRevoke{}).Where("group_id = ?", groupID).Count(&groupRevokeCount)
+	db.Model(&models.ProtectionGroup{}).Where("id = ?", groupID).Count(&groupCount)
+	if memberCount != 0 || leaveCount != 0 || groupRevokeCount != 0 || groupCount != 0 {
+		t.Fatalf("DeleteGroup left orphan rows: members=%d leaves=%d revokes=%d groups=%d",
+			memberCount, leaveCount, groupRevokeCount, groupCount)
+	}
+	cfgRow, err := GetConfig(nodeUUID)
+	if err != nil || cfgRow == nil {
+		t.Fatalf("GetConfig after DeleteGroup: row=%v err=%v", cfgRow, err)
+	}
+	parsedCfg := ConfigFromRow(cfgRow)
+	if len(parsedCfg.Policies) != 2 || parsedCfg.Policies[0].GroupID != "" {
+		t.Fatalf("DeleteGroup did not clear policy GroupID: %+v", parsedCfg.Policies)
 	}
 }
 

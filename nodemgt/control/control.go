@@ -35,32 +35,62 @@ func EnqueueApplyConfig(st *store.Store, nodeUUID string) error {
 	})
 }
 
+func EnqueueSyncQuota(st *store.Store, nodeUUID, operationID string) error {
+	if strings.TrimSpace(nodeUUID) == "" {
+		return nil
+	}
+	snap, err := st.NodeSnapshot(nodeUUID)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(snap)
+	if err != nil {
+		return err
+	}
+	return st.EnqueueCommand(&models.ControlCommand{
+		OperationID: strings.TrimSpace(operationID),
+		NodeUUID:    nodeUUID,
+		Kind:        "syncQuota",
+		PayloadJSON: string(payload),
+		Status:      models.CmdPending,
+	})
+}
+
 func PushPending(st *store.Store, nodeUUID string) error {
 	cmds, err := st.DueCommands(nodeUUID, 2*time.Minute)
 	if err != nil {
 		return err
 	}
+	var firstErr error
 	for _, cmd := range cmds {
-		PushCommand(st, cmd)
+		if err := PushCommand(st, cmd); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	return firstErr
 }
 
-func commandPayloadJSON(cmd models.ControlCommand) string {
+func commandPayloadJSON(cmd models.ControlCommand) (string, error) {
 	if cmd.PayloadJSON == "" {
-		return ""
+		return "", nil
 	}
 	plain, err := secretcrypt.Open(cmd.PayloadJSON)
 	if err != nil {
-		return cmd.PayloadJSON
+		return "", fmt.Errorf("decrypt command %s payload: %w", cmd.OperationID, err)
 	}
-	return plain
+	return plain, nil
 }
 
-func PushCommand(st *store.Store, cmd models.ControlCommand) {
+func PushCommand(st *store.Store, cmd models.ControlCommand) error {
+	raw, err := commandPayloadJSON(cmd)
+	if err != nil {
+		return err
+	}
 	var payload any
-	if raw := commandPayloadJSON(cmd); raw != "" {
-		_ = json.Unmarshal([]byte(raw), &payload)
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			return fmt.Errorf("unmarshal command %s payload: %w", cmd.OperationID, err)
+		}
 	}
 	queued := agent_runtime.DispatchV2Event(cmd.NodeUUID, v2.MethodNodemgtControl, map[string]any{
 		"operation_id": cmd.OperationID,
@@ -70,6 +100,7 @@ func PushCommand(st *store.Store, cmd models.ControlCommand) {
 	if st != nil && queued && agent_runtime.IsAgentOnline(cmd.NodeUUID) {
 		_ = st.MarkCommandSent(cmd.OperationID)
 	}
+	return nil
 }
 
 func Ack(st *store.Store, operationID, status, lastErr string) error {
@@ -213,7 +244,13 @@ func completeCertFromCSR(ctx context.Context, st *store.Store, cmd models.Contro
 		CoverWildcard bool     `json:"cover_wildcard"`
 		DNSNames      []string `json:"dns_names"`
 	}
-	_ = json.Unmarshal([]byte(commandPayloadJSON(cmd)), &payload)
+	rawPayload, err := commandPayloadJSON(cmd)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(rawPayload), &payload); err != nil {
+		return fmt.Errorf("unmarshal needCSR payload: %w", err)
+	}
 	certID, domain, testCA := payload.CertID, payload.Domain, payload.TestCA
 	names := payload.DNSNames
 	if len(names) == 0 {
@@ -261,6 +298,14 @@ func completeCertFromCSR(ctx context.Context, st *store.Store, cmd models.Contro
 func RequestACME(st *store.Store, row *models.Certificate, testCA bool) error {
 	if strings.TrimSpace(row.Domain) == "" || strings.TrimSpace(row.NodeUUID) == "" {
 		return fmt.Errorf("%w: domain and node required", store.ErrInvalid)
+	}
+	if err := cert.ValidateDomain(row.Domain); err != nil {
+		return fmt.Errorf("%w: %v", store.ErrInvalid, err)
+	}
+	if strings.TrimSpace(row.ShareDomain) != "" {
+		if err := cert.ValidateDomain(row.ShareDomain); err != nil {
+			return fmt.Errorf("%w: %v", store.ErrInvalid, err)
+		}
 	}
 	if row.Source == models.CertSourceFile || row.Source == models.CertSourceRoot {
 		return fmt.Errorf("%w: source", store.ErrInvalid)
@@ -333,9 +378,15 @@ func ApplyIssuedCert(st *store.Store, row *models.Certificate, issued *cert.Resu
 }
 
 func IssueRootCert(ctx context.Context, st *store.Store, row *models.RootCertificate, testCA bool) error {
+	if err := cert.ValidateDomain(row.Domain); err != nil {
+		return fmt.Errorf("%w: %v", store.ErrInvalid, err)
+	}
 	domain := cert.RootDomain(row.Domain)
 	if domain == "" {
 		return fmt.Errorf("%w: domain", store.ErrInvalid)
+	}
+	if err := cert.ValidateDomain(domain); err != nil {
+		return fmt.Errorf("%w: %v", store.ErrInvalid, err)
 	}
 	row.Domain = domain
 	row.Status = models.CertPending
@@ -396,6 +447,9 @@ func DeployRootToNode(st *store.Store, root *models.RootCertificate, row *models
 	shareDomain = cert.NormalizeDomain(shareDomain)
 	if shareDomain == "" {
 		return fmt.Errorf("%w: subdomain required", store.ErrInvalid)
+	}
+	if err := cert.ValidateDomain(shareDomain); err != nil {
+		return fmt.Errorf("%w: %v", store.ErrInvalid, err)
 	}
 	if !cert.HostCovered(root.Domain, shareDomain) {
 		return fmt.Errorf("%w: subdomain must be %s or a name under it", store.ErrInvalid, root.Domain)

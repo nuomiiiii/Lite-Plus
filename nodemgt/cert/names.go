@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -12,13 +13,95 @@ func NormalizeDomain(domain string) string {
 	return strings.TrimSuffix(domain, ".")
 }
 
+// ValidateDomain strictly validates a DNS domain or leftmost wildcard (*.example.com).
+func ValidateDomain(domain string) error {
+	for i := 0; i < len(domain); i++ {
+		c := domain[i]
+		if c == '/' || c == '\\' || c == 0 || c == 0x7f || (c < 0x20 && c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+			return fmt.Errorf("invalid domain")
+		}
+	}
+	d := NormalizeDomain(domain)
+	if d == "" || len(d) > 253 {
+		return fmt.Errorf("invalid domain")
+	}
+	if strings.Contains(d, "..") || strings.ContainsAny(d, "/\\ \t\r\n") {
+		return fmt.Errorf("invalid domain")
+	}
+	if net.ParseIP(d) != nil || net.ParseIP(strings.Trim(d, "[]")) != nil {
+		return fmt.Errorf("invalid domain")
+	}
+	allowUnderscoreFirst := false
+	host := d
+	if strings.HasPrefix(host, "*.") {
+		host = strings.TrimPrefix(host, "*.")
+	} else if strings.HasPrefix(host, "_acme-challenge.") {
+		allowUnderscoreFirst = true
+	}
+	if host == "" || strings.Contains(host, "*") || net.ParseIP(host) != nil {
+		return fmt.Errorf("invalid domain")
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return fmt.Errorf("invalid domain")
+	}
+	if labels[0] == "_acme-challenge" && len(labels) < 3 {
+		return fmt.Errorf("invalid domain")
+	}
+	for idx, label := range labels {
+		if len(label) < 1 || len(label) > 63 {
+			return fmt.Errorf("invalid domain")
+		}
+		if idx == 0 && allowUnderscoreFirst && label == "_acme-challenge" {
+			continue
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("invalid domain")
+		}
+		for i := 0; i < len(label); i++ {
+			ch := label[i]
+			if !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-') {
+				return fmt.Errorf("invalid domain")
+			}
+		}
+	}
+	tld := labels[len(labels)-1]
+	if len(tld) < 2 {
+		return fmt.Errorf("invalid domain")
+	}
+	hasAlpha := false
+	for i := 0; i < len(tld); i++ {
+		if tld[i] >= 'a' && tld[i] <= 'z' {
+			hasAlpha = true
+			break
+		}
+	}
+	if !hasAlpha {
+		return fmt.Errorf("invalid domain")
+	}
+	return nil
+}
+
 func FileKey(domain string) string {
-	d := strings.TrimPrefix(NormalizeDomain(domain), "*.")
-	d = strings.ReplaceAll(d, "*", "_")
-	if d == "" {
+	if ValidateDomain(domain) != nil {
 		return "cert"
 	}
-	return d
+	d := strings.TrimPrefix(NormalizeDomain(domain), "*.")
+	var b strings.Builder
+	b.Grow(len(d))
+	for i := 0; i < len(d); i++ {
+		ch := d[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' {
+			b.WriteByte(ch)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), "._")
+	if out == "" || strings.Contains(out, "..") {
+		return "cert"
+	}
+	return out
 }
 
 func ApexOf(domain string) string {
@@ -26,6 +109,9 @@ func ApexOf(domain string) string {
 }
 
 func DefaultCoverWildcard(domain string) bool {
+	if ValidateDomain(domain) != nil {
+		return false
+	}
 	d := NormalizeDomain(domain)
 	if d == "" {
 		return false
@@ -37,6 +123,9 @@ func DefaultCoverWildcard(domain string) bool {
 }
 
 func IssueNames(domain string, coverWildcard bool) []string {
+	if ValidateDomain(domain) != nil {
+		return nil
+	}
 	d := NormalizeDomain(domain)
 	if d == "" {
 		return nil

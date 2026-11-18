@@ -180,10 +180,25 @@ func NormalizeSSHPort(raw string) (string, error) {
 	return strconv.Itoa(port), nil
 }
 
+func isValidRuleID(id string) bool {
+	if len(id) < 1 || len(id) > 64 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		ch := id[i]
+		if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == ':' || ch == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 func NormalizeRule(rule v2.FirewallRule) (v2.FirewallRule, error) {
 	id := strings.TrimSpace(rule.ID)
 	if id == "" {
 		id = newRuleID()
+	} else if !isValidRuleID(id) {
+		return v2.FirewallRule{}, fmt.Errorf("%w: id", ErrInvalidRule)
 	}
 	action := strings.ToLower(strings.TrimSpace(rule.Action))
 	if action != v2.FirewallActionAllow && action != v2.FirewallActionDeny {

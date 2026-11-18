@@ -67,6 +67,7 @@ func UpdateHTTPSSettings(c *gin.Context) {
 		c.Header("Strict-Transport-Security", "max-age=0")
 		c.Header("Connection", "close")
 	}
+	subhttp.InvalidateCache()
 	_ = subhttp.Reload()
 	uuid, _ := c.Get("uuid")
 	auditlog.Event(c.ClientIP(), fmt.Sprint(uuid), "warn", "audit.https_update", nil)
@@ -83,6 +84,7 @@ func ReloadHTTPSCertificate(c *gin.Context) {
 		api.RespondError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	subhttp.InvalidateCache()
 	_ = subhttp.Reload()
 	uuid, _ := c.Get("uuid")
 	auditlog.Event(c.ClientIP(), fmt.Sprint(uuid), "info", "audit.https_reload", nil)
@@ -177,6 +179,7 @@ func ReuseRootCertificate(c *gin.Context) {
 		api.RespondError(c, http.StatusInternalServerError, "Failed to save HTTPS settings: "+err.Error())
 		return
 	}
+	subhttp.InvalidateCache()
 	_ = subhttp.Reload()
 	uuid, _ := c.Get("uuid")
 	auditlog.Event(c.ClientIP(), fmt.Sprint(uuid), "info", "audit.https_reuse_root", map[string]string{"domain": picked.Domain})

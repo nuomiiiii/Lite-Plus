@@ -437,3 +437,31 @@ func TestModifyClearsDeviceLimit(t *testing.T) {
 	neg := -1
 	require.ErrorIs(t, svc.Modify("admin", user.ID, "op-neg", nil, nil, &neg, nil), store.ErrInvalid)
 }
+
+func TestRecordUsageMultiNodeDedupAndSyncQuota(t *testing.T) {
+	svc := testSvc(t)
+	in1 := &models.Inbound{NodeUUID: "n1", Name: "in1", Protocol: "vless", Port: 443}
+	in2 := &models.Inbound{NodeUUID: "n2", Name: "in2", Protocol: "vless", Port: 443}
+	require.NoError(t, svc.Store.UpsertInbound(in1))
+	require.NoError(t, svc.Store.UpsertInbound(in2))
+
+	user := &models.NodeUser{NodeUUID: "n1", Username: "multi", QuotaBytes: 1000, Status: models.UserActive}
+	require.NoError(t, svc.Store.UpsertUser(user))
+	require.NoError(t, svc.Store.ReplaceGrants(user.ID, []string{in1.ID, in2.ID}))
+
+	// Node 1 reports batch-A (150 bytes -> crosses 10% decile, should enqueue syncQuota to n2).
+	require.NoError(t, svc.RecordUsageFromNode("n1", user.ID, 150, "batch-A"))
+	// Node 2 reports batch-A (200 bytes -> distinct nodeUUID so NOT dropped!).
+	require.NoError(t, svc.RecordUsageFromNode("n2", user.ID, 200, "batch-A"))
+	// Node 1 retries batch-A AFTER Node 2 reported -> MUST be deduplicated!
+	require.NoError(t, svc.RecordUsageFromNode("n1", user.ID, 150, "batch-A"))
+
+	got, err := svc.Store.GetUser(user.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(350), got.UsedBytes)
+
+	cmdsN2, err := svc.Store.PendingCommands("n2")
+	require.NoError(t, err)
+	require.NotEmpty(t, cmdsN2)
+	require.Equal(t, "syncQuota", cmdsN2[0].Kind)
+}

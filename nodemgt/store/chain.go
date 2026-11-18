@@ -69,12 +69,54 @@ func (s *Store) ListChainViews(nodeUUID string) ([]ChainView, error) {
 	if len(chains) == 0 {
 		return []ChainView{}, nil
 	}
-	views := make([]ChainView, 0, len(chains))
+	chainIDs := make([]string, 0, len(chains))
 	for i := range chains {
-		view, err := s.chainView(chains[i])
-		if err != nil {
+		chainIDs = append(chainIDs, chains[i].ID)
+	}
+
+	var allLandings []models.ForwardLanding
+	if err := s.db.Where("chain_id IN ?", chainIDs).Order("sort_index ASC, created_at ASC").Find(&allLandings).Error; err != nil {
+		return nil, err
+	}
+	var allLinks []models.ForwardLink
+	if err := s.db.Where("chain_id IN ?", chainIDs).Order("sort_index ASC, created_at ASC").Find(&allLinks).Error; err != nil {
+		return nil, err
+	}
+
+	inboundIDSet := map[string]struct{}{}
+	landingsByChain := make(map[string][]models.ForwardLanding, len(chains))
+	for _, item := range allLandings {
+		landingsByChain[item.ChainID] = append(landingsByChain[item.ChainID], item)
+		if item.LandingInboundID != "" {
+			inboundIDSet[item.LandingInboundID] = struct{}{}
+		}
+	}
+	linksByChain := make(map[string][]models.ForwardLink, len(chains))
+	for _, link := range allLinks {
+		linksByChain[link.ChainID] = append(linksByChain[link.ChainID], link)
+		if link.SourceInboundID != "" {
+			inboundIDSet[link.SourceInboundID] = struct{}{}
+		}
+	}
+
+	inboundByID := map[string]models.Inbound{}
+	if len(inboundIDSet) > 0 {
+		inboundIDs := make([]string, 0, len(inboundIDSet))
+		for id := range inboundIDSet {
+			inboundIDs = append(inboundIDs, id)
+		}
+		var inboundRows []models.Inbound
+		if err := s.db.Select("id, name, node_uuid, protocol, port").Where("id IN ?", inboundIDs).Find(&inboundRows).Error; err != nil {
 			return nil, err
 		}
+		for _, in := range inboundRows {
+			inboundByID[in.ID] = in
+		}
+	}
+
+	views := make([]ChainView, 0, len(chains))
+	for i := range chains {
+		view := assembleChainView(chains[i], landingsByChain[chains[i].ID], linksByChain[chains[i].ID], inboundByID)
 		if nodeUUID != "" && !chainOnNode(view, nodeUUID) {
 			continue
 		}
@@ -438,7 +480,7 @@ func (s *Store) inboundHasManualForwarding(id string) error {
 	return nil
 }
 
-func (s *Store) chainView(row models.ForwardChain) (ChainView, error) {
+func assembleChainView(row models.ForwardChain, landings []models.ForwardLanding, links []models.ForwardLink, inboundByID map[string]models.Inbound) ChainView {
 	view := ChainView{
 		ForwardChain: row,
 		Landings:     []ChainLandingView{},
@@ -447,13 +489,9 @@ func (s *Store) chainView(row models.ForwardChain) (ChainView, error) {
 		SourceNames:  []string{},
 	}
 	view.Strategy = normalizeChainStrategy(row.Strategy)
-	var landings []models.ForwardLanding
-	if err := s.db.Where("chain_id = ?", row.ID).Order("sort_index ASC, created_at ASC").Find(&landings).Error; err != nil {
-		return view, err
-	}
 	for _, item := range landings {
 		hop := ChainLandingView{ID: item.ID, LandingInboundID: item.LandingInboundID}
-		if landing, err := s.GetInbound(item.LandingInboundID); err == nil {
+		if landing, ok := inboundByID[item.LandingInboundID]; ok {
 			hop.LandingName = landing.Name
 			hop.LandingNodeUUID = landing.NodeUUID
 			hop.LandingProtocol = landing.Protocol
@@ -464,10 +502,6 @@ func (s *Store) chainView(row models.ForwardChain) (ChainView, error) {
 			view.LandingNames = append(view.LandingNames, hop.LandingName)
 		}
 	}
-	var links []models.ForwardLink
-	if err := s.db.Where("chain_id = ?", row.ID).Order("sort_index ASC, created_at ASC").Find(&links).Error; err != nil {
-		return view, err
-	}
 	for _, link := range links {
 		hop := ChainHopView{
 			ID:              link.ID,
@@ -475,7 +509,7 @@ func (s *Store) chainView(row models.ForwardChain) (ChainView, error) {
 			OutboundID:      link.OutboundID,
 			RouteID:         link.RouteID,
 		}
-		if source, err := s.GetInbound(link.SourceInboundID); err == nil {
+		if source, ok := inboundByID[link.SourceInboundID]; ok {
 			hop.SourceName = source.Name
 			hop.SourceNodeUUID = source.NodeUUID
 			hop.SourceProtocol = source.Protocol
@@ -487,7 +521,44 @@ func (s *Store) chainView(row models.ForwardChain) (ChainView, error) {
 		}
 	}
 	view.Strategy, view.BackupDirect, view.FallbackDirect = interpretChainHA(view.Strategy, view.BackupDirect, view.FallbackDirect, len(view.Landings))
-	return view, nil
+	return view
+}
+
+func (s *Store) chainView(row models.ForwardChain) (ChainView, error) {
+	var landings []models.ForwardLanding
+	if err := s.db.Where("chain_id = ?", row.ID).Order("sort_index ASC, created_at ASC").Find(&landings).Error; err != nil {
+		return ChainView{}, err
+	}
+	var links []models.ForwardLink
+	if err := s.db.Where("chain_id = ?", row.ID).Order("sort_index ASC, created_at ASC").Find(&links).Error; err != nil {
+		return ChainView{}, err
+	}
+	inboundIDSet := map[string]struct{}{}
+	for _, item := range landings {
+		if item.LandingInboundID != "" {
+			inboundIDSet[item.LandingInboundID] = struct{}{}
+		}
+	}
+	for _, link := range links {
+		if link.SourceInboundID != "" {
+			inboundIDSet[link.SourceInboundID] = struct{}{}
+		}
+	}
+	inboundByID := map[string]models.Inbound{}
+	if len(inboundIDSet) > 0 {
+		ids := make([]string, 0, len(inboundIDSet))
+		for id := range inboundIDSet {
+			ids = append(ids, id)
+		}
+		var inboundRows []models.Inbound
+		if err := s.db.Select("id, name, node_uuid, protocol, port").Where("id IN ?", ids).Find(&inboundRows).Error; err != nil {
+			return ChainView{}, err
+		}
+		for _, in := range inboundRows {
+			inboundByID[in.ID] = in
+		}
+	}
+	return assembleChainView(row, landings, links, inboundByID), nil
 }
 
 func chainOnNode(view ChainView, nodeUUID string) bool {
@@ -905,7 +976,8 @@ func (s *Store) managedOutboundOnNode(nodeUUID, landingID string) (*models.Outbo
 			continue
 		}
 		if settingsString(rows[i].SettingsJSON, "landing_inbound_id") == landingID && settingsFlag(rows[i].SettingsJSON, "chain_managed") {
-			return &rows[i], nil
+			opened := OpenOutboundSecrets(rows[i])
+			return &opened, nil
 		}
 	}
 	return nil, ErrNotFound
@@ -1224,7 +1296,8 @@ func (s *Store) EnsureGrant(userID, inboundID string) error {
 }
 
 func (s *Store) outboundSettingsFromLanding(chainID string, landing *models.Inbound) (string, error) {
-	cfg := inboundcfg.Parse(landing.SettingsJSON)
+	openedLanding := OpenInboundSecrets(*landing)
+	cfg := inboundcfg.Parse(openedLanding.SettingsJSON)
 	host, port, ok := s.landingDial(landing, cfg)
 	if !ok {
 		return "", fmt.Errorf("%w: chain_no_address", ErrInvalid)
@@ -1666,13 +1739,14 @@ func outboundConfigFP(row *models.Outbound) string {
 	if row == nil {
 		return ""
 	}
+	opened := OpenOutboundSecrets(*row)
 	return strings.Join([]string{
-		row.NodeUUID,
-		row.Core,
-		row.Protocol,
-		row.Name,
-		strconv.FormatBool(row.Enabled),
-		canonJSON(row.SettingsJSON),
+		opened.NodeUUID,
+		opened.Core,
+		opened.Protocol,
+		opened.Name,
+		strconv.FormatBool(opened.Enabled),
+		canonJSON(opened.SettingsJSON),
 	}, "\x1f")
 }
 

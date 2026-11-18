@@ -229,6 +229,13 @@ func pruneExpiredActivity(db *gorm.DB, now time.Time) error {
 			return err
 		}
 	}
+	staleCutoff := now.Add(-30 * 24 * time.Hour)
+	if err := db.Where("reset_at < ?", staleCutoff).Delete(&models.ProtectionRevoke{}).Error; err != nil {
+		return err
+	}
+	if err := db.Where("finished_at IS NOT NULL AND finished_at < ?", staleCutoff).Delete(&models.ProtectionUpgradeOp{}).Error; err != nil {
+		return err
+	}
 	var rows []models.ClientProtectionConfig
 	if err := db.Where("report_json <> '' AND report_json <> 'null'").Find(&rows).Error; err != nil {
 		return err
@@ -336,12 +343,103 @@ func SaveGroup(row *models.ProtectionGroup) error {
 	return dbcore.GetDBInstance().Clauses(clause.OnConflict{UpdateAll: true}).Create(row).Error
 }
 
-func DeleteGroup(id string) error {
+func DueClientUUIDs() ([]string, error) {
 	db := dbcore.GetDBInstance()
-	if err := db.Where("group_id = ?", id).Delete(&models.ProtectionGroupMember{}).Error; err != nil {
-		return err
+	if db == nil {
+		return nil, nil
 	}
-	return db.Where("id = ?", id).Delete(&models.ProtectionGroup{}).Error
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(ids []string) {
+		for _, id := range ids {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+
+	var cfgClients []string
+	if err := db.Model(&models.ClientProtectionConfig{}).
+		Where("revision > 0 AND (applied_revision < revision OR delivery_status IN ?)",
+			[]string{DeliveryPending, DeliveryQueued, DeliverySent, DeliveryFailed, ""}).
+		Pluck("client", &cfgClients).Error; err != nil {
+		return nil, err
+	}
+	add(cfgClients)
+
+	var leaveClients []string
+	if err := db.Model(&models.ProtectionGroupLeave{}).Pluck("client", &leaveClients).Error; err != nil {
+		return nil, err
+	}
+	add(leaveClients)
+
+	var memberClients []string
+	if err := db.Model(&models.ProtectionGroupMember{}).
+		Joins("INNER JOIN protection_groups ON protection_groups.id = protection_group_members.group_id").
+		Where("protection_group_members.applied_revision < protection_groups.revision OR protection_group_members.delivery_status IN ?",
+			[]string{DeliveryPending, DeliveryQueued, DeliverySent, DeliveryFailed, ""}).
+		Pluck("protection_group_members.client", &memberClients).Error; err != nil {
+		return nil, err
+	}
+	add(memberClients)
+
+	return out, nil
+}
+
+func DeleteGroup(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	return dbcore.GetDBInstance().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("group_id = ?", id).Delete(&models.ProtectionGroupMember{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("group_id = ?", id).Delete(&models.ProtectionRevoke{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("group_id = ?", id).Delete(&models.ProtectionGroupLeave{}).Error; err != nil {
+			return err
+		}
+		var cfgs []models.ClientProtectionConfig
+		if err := tx.Where("policies_json LIKE ?", "%"+id+"%").Find(&cfgs).Error; err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		for i := range cfgs {
+			var policies []v2.ProtectionPolicy
+			if json.Unmarshal([]byte(cfgs[i].PoliciesJSON), &policies) != nil {
+				continue
+			}
+			changed := false
+			for j := range policies {
+				if strings.TrimSpace(policies[j].GroupID) == id {
+					policies[j].GroupID = ""
+					changed = true
+				}
+			}
+			if !changed {
+				continue
+			}
+			if err := tx.Model(&models.ClientProtectionConfig{}).Where("client = ?", cfgs[i].Client).Updates(map[string]any{
+				"policies_json":       marshalJSON(policies),
+				"revision":            gorm.Expr("revision + 1"),
+				"delivery_status":     DeliveryPending,
+				"delivery_error":      "",
+				"delivery_updated_at": nil,
+				"updated_at":          now,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Where("id = ?", id).Delete(&models.ProtectionGroup{}).Error
+	})
 }
 
 func ClaimSharedFanout(groupID, source, ip, eventID string, created time.Time) (uint64, bool, error) {

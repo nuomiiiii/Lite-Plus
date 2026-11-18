@@ -64,9 +64,6 @@ func deleteNodeTx(tx *gorm.DB, nodeUUID string) error {
 		if err := deleteWhere(tx, &models.QuotaLedger{}, "user_id IN ?", drop); err != nil {
 			return err
 		}
-		if err := deleteWhere(tx, &models.QuotaLease{}, "user_id IN ?", drop); err != nil {
-			return err
-		}
 		if err := deleteWhere(tx, &models.UserExtraLink{}, "user_id IN ?", drop); err != nil {
 			return err
 		}

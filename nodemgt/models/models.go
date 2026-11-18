@@ -214,21 +214,10 @@ type QuotaLedger struct {
 
 func (QuotaLedger) TableName() string { return "nodemgt_quota_ledger" }
 
-type QuotaLease struct {
-	ID        string    `json:"id" gorm:"type:varchar(36);primaryKey"`
-	PoolID    string    `json:"pool_id" gorm:"type:varchar(36);index;not null"`
-	UserID    string    `json:"user_id" gorm:"type:varchar(36);index;not null"`
-	Bytes     int64     `json:"bytes" gorm:"not null"`
-	ExpiresAt time.Time `json:"expires_at"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-func (QuotaLease) TableName() string { return "nodemgt_quota_leases" }
-
 type Subscription struct {
 	ID         string    `json:"id" gorm:"type:varchar(36);primaryKey"`
 	UserID     string    `json:"user_id" gorm:"type:varchar(36);index;not null"`
-	Token      string    `json:"token" gorm:"type:varchar(64);uniqueIndex;not null"`
+	Token      string    `json:"token" gorm:"type:text;not null"`
 	TokenHash  string    `json:"-" gorm:"type:varchar(64);index"`
 	Format     string    `json:"format" gorm:"type:varchar(16);not null;default:'xray'"`
 	AutoDetect bool      `json:"auto_detect" gorm:"not null;default:false"`
@@ -397,7 +386,6 @@ func All() []any {
 		&Plan{},
 		&Assignment{},
 		&QuotaLedger{},
-		&QuotaLease{},
 		&Subscription{},
 		&SubscriptionTemplate{},
 		&SubscriptionTemplateBinding{},

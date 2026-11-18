@@ -450,20 +450,43 @@ func TestAssignedPlanRateOverridesUserRate(t *testing.T) {
 	require.NoError(t, st.UpsertUser(user))
 	plan := &models.Plan{Name: "std", TrafficBytes: 1000, DurationDays: 30, RateLimitBps: 256000}
 	require.NoError(t, st.UpsertPlan(plan))
-	require.NoError(t, st.SaveAssignment(&models.Assignment{UserID: user.ID, PlanID: plan.ID, TrafficBytes: 1000, RateLimitBps: 256000}))
+	future := time.Now().UTC().Add(24 * time.Hour)
+	require.NoError(t, st.SaveAssignment(&models.Assignment{UserID: user.ID, PlanID: plan.ID, EndsAt: &future, TrafficBytes: 1000, RateLimitBps: 256000, OperationID: "op-active"}))
 	require.NoError(t, st.ReplaceGrants(user.ID, []string{in.ID}))
+
+	// Explicit positive user.RateLimitBps overrides plan.RateLimitBps.
 	views, err := st.ListUserViews("")
 	require.NoError(t, err)
 	require.Len(t, views, 1)
-	require.Equal(t, int64(256000), views[0].RateLimitBps)
+	require.Equal(t, int64(999), views[0].RateLimitBps)
 	snap, err := st.NodeSnapshot("n1")
 	require.NoError(t, err)
 	users := snap["users"].([]snapshotUser)
 	require.Len(t, users, 1)
-	require.Equal(t, int64(256000), users[0].RateLimitBps)
-	stored, err := st.GetUser(user.ID)
+	require.Equal(t, int64(999), users[0].RateLimitBps)
+
+	// When user.RateLimitBps <= 0, active assignment falls back to plan.RateLimitBps.
+	user.RateLimitBps = 0
+	require.NoError(t, st.UpsertUser(user))
+	views, err = st.ListUserViews("")
 	require.NoError(t, err)
-	require.Equal(t, int64(999), stored.RateLimitBps)
+	require.Equal(t, int64(256000), views[0].RateLimitBps)
+	snap, err = st.NodeSnapshot("n1")
+	require.NoError(t, err)
+	users = snap["users"].([]snapshotUser)
+	require.Equal(t, int64(256000), users[0].RateLimitBps)
+
+	// Expired assignment does not apply plan.RateLimitBps.
+	past := time.Now().UTC().Add(-time.Hour)
+	require.NoError(t, st.DeleteAssignments(user.ID))
+	require.NoError(t, st.SaveAssignment(&models.Assignment{UserID: user.ID, PlanID: plan.ID, EndsAt: &past, TrafficBytes: 1000, RateLimitBps: 256000, OperationID: "op-expired"}))
+	views, err = st.ListUserViews("")
+	require.NoError(t, err)
+	require.Equal(t, int64(0), views[0].RateLimitBps)
+	snap, err = st.NodeSnapshot("n1")
+	require.NoError(t, err)
+	users = snap["users"].([]snapshotUser)
+	require.Equal(t, int64(0), users[0].RateLimitBps)
 }
 
 func TestNodeSnapshotScopesGrantsAndProtocolSecrets(t *testing.T) {
@@ -479,8 +502,11 @@ func TestNodeSnapshotScopesGrantsAndProtocolSecrets(t *testing.T) {
 	_, secret, err := st.IssueCredential(user.ID, "uuid", "", nil)
 	require.NoError(t, err)
 	require.NoError(t, st.ReplaceGrants(user.ID, []string{inA.ID, inC.ID}))
+	require.NoError(t, st.AddUserUsage("n1", user.ID, "batch-42", 128))
 	snap, err := st.NodeSnapshot("n1")
 	require.NoError(t, err)
+	require.Equal(t, "n1", snap["node_uuid"])
+	require.Contains(t, snap["acked_usage_ops"].([]string), UsageDedupOpID("n1", "batch-42", user.ID))
 	users := snap["users"].([]snapshotUser)
 	require.Len(t, users, 1)
 	require.Equal(t, []string{inA.ID}, users[0].InboundIDs)
@@ -1018,4 +1044,126 @@ func TestNodeDialStackPersistsInSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, DialStackPreferIPv6, snap["dial_stack"])
 	require.Equal(t, DialStackDual, st.NodeDialStack("missing"))
+}
+
+func TestInboundAndOutboundSecretsEncryptedAtRestAndDeleteUserCleansLedger(t *testing.T) {
+	st := testDB(t)
+	in := &models.Inbound{
+		NodeUUID:     "n1",
+		Name:         "secret-in",
+		Protocol:     "http",
+		Port:         8080,
+		SettingsJSON: `{"reality_private_key":"rk-plain","ss_password":"ss-plain","accounts":[{"user":"u1","pass":"p-plain"}]}`,
+		StreamJSON:   `{"realitySettings":{"privateKey":"rk-stream-plain"}}`,
+	}
+	require.NoError(t, st.UpsertInbound(in))
+
+	var rawIn models.Inbound
+	require.NoError(t, st.DB().First(&rawIn, "id = ?", in.ID).Error)
+	require.NotContains(t, rawIn.SettingsJSON, "rk-plain")
+	require.NotContains(t, rawIn.SettingsJSON, "ss-plain")
+	require.NotContains(t, rawIn.SettingsJSON, "p-plain")
+	require.NotContains(t, rawIn.StreamJSON, "rk-stream-plain")
+	require.Contains(t, rawIn.SettingsJSON, "enc:v1:")
+
+	loadedIn, err := st.GetInbound(in.ID)
+	require.NoError(t, err)
+	require.Contains(t, loadedIn.SettingsJSON, "rk-plain")
+	require.Contains(t, loadedIn.SettingsJSON, "ss-plain")
+	require.Contains(t, loadedIn.SettingsJSON, "p-plain")
+	require.Contains(t, loadedIn.StreamJSON, "rk-stream-plain")
+
+	ob := &models.Outbound{
+		NodeUUID:     "n1",
+		Name:         "secret-out",
+		Protocol:     "trojan",
+		SettingsJSON: `{"address":"1.2.3.4","port":443,"password":"ob-secret-pass"}`,
+	}
+	require.NoError(t, st.UpsertOutbound(ob))
+
+	var rawOb models.Outbound
+	require.NoError(t, st.DB().First(&rawOb, "id = ?", ob.ID).Error)
+	require.NotContains(t, rawOb.SettingsJSON, "ob-secret-pass")
+	require.Contains(t, rawOb.SettingsJSON, "enc:v1:")
+
+	loadedOb, err := st.GetOutbound(ob.ID)
+	require.NoError(t, err)
+	require.Contains(t, loadedOb.SettingsJSON, "ob-secret-pass")
+
+	user := &models.NodeUser{NodeUUID: "n1", Username: "ledger-user"}
+	require.NoError(t, st.UpsertUser(user))
+	require.NoError(t, st.AddLedger(user.ID, "topup", "op-1", 1024))
+	require.NoError(t, st.DeleteUser(user.ID))
+
+	var ledgerCount int64
+	require.NoError(t, st.DB().Model(&models.QuotaLedger{}).Where("user_id = ?", user.ID).Count(&ledgerCount).Error)
+	require.Zero(t, ledgerCount)
+}
+
+func TestSecretcryptFailureErrorsInsteadOfCorruptingOrLeaking(t *testing.T) {
+	st := testDB(t)
+	user := &models.NodeUser{NodeUUID: "n1", Username: "sub-user"}
+	require.NoError(t, st.UpsertUser(user))
+	subRow, err := st.EnsureSubscription(user.ID)
+	require.NoError(t, err)
+	origHash := subRow.TokenHash
+
+	badSub := *subRow
+	badSub.Token = "enc:v1:corrupted-ciphertext"
+	require.Error(t, st.UpsertSubscription(&badSub))
+
+	var checkSub models.Subscription
+	require.NoError(t, st.DB().First(&checkSub, "id = ?", subRow.ID).Error)
+	require.Equal(t, origHash, checkSub.TokenHash)
+
+	cred := &models.Credential{
+		ID:             "cred-corrupt",
+		UserID:         user.ID,
+		Kind:           "trojan",
+		SecretMaterial: "enc:v1:corrupted-ciphertext",
+		Enabled:        true,
+	}
+	require.NoError(t, st.DB().Create(cred).Error)
+	_, err = st.NodeSnapshot("n1")
+	require.Error(t, err)
+}
+
+func TestLatestCommandsReturnsNewestPerNodeWithoutPayload(t *testing.T) {
+	st := testDB(t)
+	base := time.Date(2026, 11, 18, 1, 0, 0, 0, time.UTC)
+
+	seed := []models.ControlCommand{
+		// node-a: two commands with identical CreatedAt -> rowid DESC must pick a-second!
+		{ID: "cmd-a-1", NodeUUID: "node-a", OperationID: "op-a-1", Kind: "applyConfig", PayloadJSON: `{"big":"payload-a1"}`, Status: models.CmdApplied, CreatedAt: base, UpdatedAt: base},
+		{ID: "cmd-a-2", NodeUUID: "node-a", OperationID: "op-a-2", Kind: "syncQuota", PayloadJSON: `{"big":"payload-a2"}`, Status: models.CmdSent, CreatedAt: base, UpdatedAt: base},
+		// node-b: newer CreatedAt wins over older row.
+		{ID: "cmd-b-1", NodeUUID: "node-b", OperationID: "op-b-1", Kind: "applyConfig", PayloadJSON: `{"big":"payload-b1"}`, Status: models.CmdSuperseded, CreatedAt: base.Add(-time.Minute), UpdatedAt: base},
+		{ID: "cmd-b-2", NodeUUID: "node-b", OperationID: "op-b-2", Kind: "applyConfig", PayloadJSON: `{"big":"payload-b2"}`, Status: models.CmdFailed, LastError: "boom", CreatedAt: base.Add(2 * time.Minute), UpdatedAt: base.Add(2 * time.Minute)},
+		// node-c: single command, oldest among winners.
+		{ID: "cmd-c-1", NodeUUID: "node-c", OperationID: "op-c-1", Kind: "applyCert", PayloadJSON: `{"big":"payload-c1"}`, Status: models.CmdPending, CreatedAt: base.Add(-5 * time.Minute), UpdatedAt: base.Add(-5 * time.Minute)},
+	}
+	for i := range seed {
+		require.NoError(t, st.DB().Create(&seed[i]).Error)
+	}
+
+	got, err := st.LatestCommands()
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+
+	// Ordered by created_at DESC, rowid DESC: node-b (base+2m), node-a (base, op-a-2), node-c (base-5m).
+	require.Equal(t, "node-b", got[0].NodeUUID)
+	require.Equal(t, "op-b-2", got[0].OperationID)
+	require.Equal(t, models.CmdFailed, got[0].Status)
+	require.Equal(t, "boom", got[0].LastError)
+	require.Empty(t, got[0].PayloadJSON, "LatestCommands must omit PayloadJSON")
+
+	require.Equal(t, "node-a", got[1].NodeUUID)
+	require.Equal(t, "op-a-2", got[1].OperationID)
+	require.Equal(t, models.CmdSent, got[1].Status)
+	require.Empty(t, got[1].PayloadJSON, "LatestCommands must omit PayloadJSON")
+
+	require.Equal(t, "node-c", got[2].NodeUUID)
+	require.Equal(t, "op-c-1", got[2].OperationID)
+	require.Equal(t, models.CmdPending, got[2].Status)
+	require.Empty(t, got[2].PayloadJSON, "LatestCommands must omit PayloadJSON")
 }

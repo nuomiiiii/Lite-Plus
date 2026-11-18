@@ -160,7 +160,8 @@ func TestEnqueueApplyConfigSealsSecrets(t *testing.T) {
 	require.Len(t, pending, 1)
 	require.True(t, strings.HasPrefix(pending[0].PayloadJSON, "enc:v1:"))
 	require.False(t, strings.Contains(pending[0].PayloadJSON, plain))
-	opened := commandPayloadJSON(pending[0])
+	opened, err := commandPayloadJSON(pending[0])
+	require.NoError(t, err)
 	require.Contains(t, opened, plain)
 }
 
@@ -204,7 +205,8 @@ func TestBindFileCertEnqueuesApplyConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, pending, 1)
 	require.Equal(t, "applyConfig", pending[0].Kind)
-	opened := commandPayloadJSON(pending[0])
+	opened, err := commandPayloadJSON(pending[0])
+	require.NoError(t, err)
 	require.Contains(t, opened, "/opt/1panel/ssl/fullchain.pem")
 	require.Contains(t, opened, "/opt/1panel/ssl/privkey.pem")
 	require.Contains(t, opened, `"source":"file"`)
@@ -346,4 +348,17 @@ func TestRenewDueReissuesRootAndLeavesChildrenToPush(t *testing.T) {
 	require.Equal(t, models.CertIssued, fresh.Status)
 	require.NotNil(t, fresh.NotAfter)
 	require.True(t, fresh.NotAfter.After(time.Now().UTC().Add(60*24*time.Hour)))
+}
+
+func TestPushCommandRejectsUndecryptablePayload(t *testing.T) {
+	st := testStore(t)
+	badCmd := models.ControlCommand{
+		OperationID: "op-corrupt",
+		NodeUUID:    "n1",
+		Kind:        "applyConfig",
+		PayloadJSON: "enc:v1:not-valid-ciphertext",
+		Status:      models.CmdPending,
+	}
+	err := PushCommand(st, badCmd)
+	require.Error(t, err)
 }

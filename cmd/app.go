@@ -51,6 +51,7 @@ import (
 	installweb "github.com/nuomiiiii/lite/web/install"
 	"github.com/nuomiiiii/lite/web/mcp"
 	"github.com/nuomiiiii/lite/web/oauth"
+	"github.com/nuomiiiii/lite/web/protection"
 	frontendpublic "github.com/nuomiiiii/lite/web/public"
 	"github.com/nuomiiiii/lite/web/remotectl"
 	"github.com/nuomiiiii/lite/web/router"
@@ -593,6 +594,7 @@ func (a *App) StartBackground() error {
 				_, _ = ops.New(st).SyncDueTrafficResets(time.Now().UTC())
 				_ = control.PushPending(st, "")
 				firewall.PushPending("")
+				protection.PushPending("")
 			}
 		}
 	}()

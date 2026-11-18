@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/nuomiiiii/lite/database/auditlog"
 	"github.com/nuomiiiii/lite/database/clients"
 	"github.com/nuomiiiii/lite/database/dbcore"
+	fwstore "github.com/nuomiiiii/lite/database/firewall"
 	"github.com/nuomiiiii/lite/nodemgt/cert"
 	"github.com/nuomiiiii/lite/nodemgt/control"
 	"github.com/nuomiiiii/lite/nodemgt/inboundcfg"
@@ -23,10 +25,13 @@ import (
 	"github.com/nuomiiiii/lite/nodemgt/subhttp"
 	"github.com/nuomiiiii/lite/nodemgt/subtpl"
 	"github.com/nuomiiiii/lite/pkg/rpc"
+	v2 "github.com/nuomiiiii/lite/protocol/v2"
 	logger "github.com/nuomiiiii/lite/utils/log"
 	"github.com/nuomiiiii/lite/web/firewall"
 	"gorm.io/gorm"
 )
+
+const maskedSecretPlaceholder = "********"
 
 func init() {
 	reg("nodemgt.inbound.list", nodemgtInboundList, "List nodemgt inbounds")
@@ -225,7 +230,35 @@ func nodemgtCommandView(cmd models.ControlCommand) map[string]any {
 	}
 }
 
-func nodemgtInboundList(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+func preloadFirewallLinkedMap(rows []models.Inbound) map[string]bool {
+	linked := map[string]bool{}
+	seenNodes := map[string]struct{}{}
+	for _, r := range rows {
+		nodeUUID := strings.TrimSpace(r.NodeUUID)
+		if nodeUUID == "" {
+			continue
+		}
+		if _, ok := seenNodes[nodeUUID]; ok {
+			continue
+		}
+		seenNodes[nodeUUID] = struct{}{}
+		fwRow, err := fwstore.Get(nodeUUID)
+		if err != nil || fwRow == nil {
+			continue
+		}
+		for _, rule := range fwstore.IntentFromRow(fwRow).Rules {
+			if rule.Origin == v2.FirewallOriginInbound && rule.InboundID != "" {
+				linked[nodeUUID+"\x00"+rule.InboundID] = true
+			}
+		}
+	}
+	return linked
+}
+
+func nodemgtInboundList(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		NodeUUID string `json:"node_uuid"`
 	}
@@ -234,9 +267,10 @@ func nodemgtInboundList(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.J
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
+	linked := preloadFirewallLinkedMap(rows)
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, inboundView(row))
+		out = append(out, inboundViewWithLinked(row, linked[strings.TrimSpace(row.NodeUUID)+"\x00"+row.ID]))
 	}
 	return out, nil
 }
@@ -338,6 +372,9 @@ func inboundPublicPort(p inboundUpsertParams, existing *models.Inbound) int {
 }
 
 func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p inboundUpsertParams
 	if err := req.BindParams(&p); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
@@ -390,19 +427,23 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	if p.Security == "tls" && strings.TrimSpace(p.CertID) == "" {
 		return nil, rpc.MakeError(rpc.InvalidParams, "certificate required", nil)
 	}
+	st := nodemgtST()
+	var existing *models.Inbound
+	var oldCfg inboundcfg.Settings
 	ssPassword := ""
-	if p.ID != "" {
-		if existing, err := nodemgtST().GetInbound(p.ID); err == nil && existing != nil {
-			old := inboundcfg.Parse(existing.SettingsJSON)
-			ssPassword = old.SSPassword
-			if strings.TrimSpace(p.RealityPrivateKey) == "" {
-				p.RealityPrivateKey = old.RealityPrivateKey
+	if strings.TrimSpace(p.ID) != "" {
+		if existingRow, err := st.GetInbound(p.ID); err == nil && existingRow != nil {
+			existing = existingRow
+			oldCfg = inboundcfg.Parse(existing.SettingsJSON)
+			ssPassword = oldCfg.SSPassword
+			if strings.TrimSpace(p.RealityPrivateKey) == "" || strings.TrimSpace(p.RealityPrivateKey) == maskedSecretPlaceholder {
+				p.RealityPrivateKey = oldCfg.RealityPrivateKey
 			}
 			if strings.TrimSpace(p.RealityPublicKey) == "" {
-				p.RealityPublicKey = old.RealityPublicKey
+				p.RealityPublicKey = oldCfg.RealityPublicKey
 			}
 			if strings.TrimSpace(p.RealityShortID) == "" {
-				p.RealityShortID = old.RealityShortID
+				p.RealityShortID = oldCfg.RealityShortID
 			}
 		}
 	}
@@ -418,7 +459,7 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 		}
 	}
 	if strings.TrimSpace(p.CertID) != "" && p.Security == "tls" {
-		if issued, err := nodemgtST().GetCert(p.CertID); err == nil && issued != nil {
+		if issued, err := st.GetCert(p.CertID); err == nil && issued != nil {
 			if strings.TrimSpace(p.TLSDomain) == "" {
 				p.TLSDomain = strings.TrimSpace(issued.ShareDomain)
 			}
@@ -454,13 +495,6 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 	publicHost := ""
 	if shareStrategy == "other" {
 		publicHost = strings.TrimSpace(p.PublicHost)
-	}
-	st := nodemgtST()
-	var existing *models.Inbound
-	if strings.TrimSpace(p.ID) != "" {
-		if row, err := st.GetInbound(p.ID); err == nil {
-			existing = row
-		}
 	}
 	sortIndex := resolveInboundSortIndex(p.ID, p.SortIndex, existing, func() int {
 		return st.NextInboundSortIndex("")
@@ -509,7 +543,20 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 		cfg.UDPFragment = nil
 	}
 	if strings.EqualFold(p.Protocol, "http") {
-		cfg.Accounts = inboundcfg.NormalizeAccounts(p.Accounts)
+		accountsInput := make([]inboundcfg.ProxyAccount, 0, len(p.Accounts))
+		oldPassByUser := map[string]string{}
+		for _, oa := range oldCfg.Accounts {
+			oldPassByUser[strings.TrimSpace(oa.User)] = oa.Pass
+		}
+		for _, acc := range p.Accounts {
+			if strings.TrimSpace(acc.Pass) == maskedSecretPlaceholder {
+				if prevPass := oldPassByUser[strings.TrimSpace(acc.User)]; prevPass != "" {
+					acc.Pass = prevPass
+				}
+			}
+			accountsInput = append(accountsInput, acc)
+		}
+		cfg.Accounts = inboundcfg.NormalizeAccounts(accountsInput)
 		if len(cfg.Accounts) == 0 {
 			cfg.Accounts = []inboundcfg.ProxyAccount{inboundcfg.RandomProxyAccount()}
 		}
@@ -606,7 +653,12 @@ func nodemgtInboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 }
 
 func inboundView(row models.Inbound) map[string]any {
-	s := inboundcfg.Parse(row.SettingsJSON)
+	return inboundViewWithLinked(row, firewall.InboundLinked(row.NodeUUID, row.ID))
+}
+
+func inboundViewWithLinked(row models.Inbound, fwLinked bool) map[string]any {
+	opened := store.OpenInboundSecrets(row)
+	s := inboundcfg.Parse(opened.SettingsJSON)
 	transport := s.Transport
 	if strings.EqualFold(row.Protocol, "shadowsocks") {
 		transport = inboundcfg.EffectiveSSNetwork(s)
@@ -658,7 +710,7 @@ func inboundView(row models.Inbound) map[string]any {
 		"route_only":           inboundcfg.EffectiveRouteOnly(s),
 		"exclude_from_sub":     s.ExcludeFromSub,
 		"share_strategy":       s.ShareStrategy,
-		"firewall_linked":      firewall.InboundLinked(row.NodeUUID, row.ID),
+		"firewall_linked":      fwLinked,
 	}
 	if strings.EqualFold(row.Protocol, "shadowsocks") {
 		view["ss_network"] = inboundcfg.EffectiveSSNetwork(s)
@@ -670,6 +722,9 @@ func inboundView(row models.Inbound) map[string]any {
 }
 
 func nodemgtInboundDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID     string `json:"id"`
 		Grant  string `json:"grant"`
@@ -721,6 +776,9 @@ func nodemgtInboundDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 }
 
 func nodemgtInboundReorder(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		NodeUUID string   `json:"node_uuid"`
 		IDs      []string `json:"ids"`
@@ -743,14 +801,18 @@ func nodemgtInboundReorder(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
+	linked := preloadFirewallLinkedMap(rows)
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, inboundView(row))
+		out = append(out, inboundViewWithLinked(row, linked[strings.TrimSpace(row.NodeUUID)+"\x00"+row.ID]))
 	}
 	return out, nil
 }
 
-func nodemgtOutboundList(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+func nodemgtOutboundList(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		NodeUUID string `json:"node_uuid"`
 	}
@@ -766,7 +828,19 @@ func nodemgtOutboundList(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	return out, nil
 }
 
+func boolFromJSONAny(v any) bool {
+	switch val := v.(type) {
+	case bool:
+		return val
+	case string:
+		return strings.EqualFold(val, "true") || val == "1"
+	default:
+		return false
+	}
+}
+
 func outboundView(row models.Outbound) map[string]any {
+	opened := store.OpenOutboundSecrets(row)
 	var s struct {
 		Address          string `json:"address"`
 		Port             int    `json:"port"`
@@ -789,8 +863,10 @@ func outboundView(row models.Outbound) map[string]any {
 		RealityShortID   string `json:"reality_short_id"`
 		SpiderX          string `json:"spider_x"`
 		SourceInboundID  string `json:"source_inbound_id"`
+		ChainManaged     any    `json:"chain_managed"`
+		RouteManaged     any    `json:"route_managed"`
 	}
-	_ = json.Unmarshal([]byte(row.SettingsJSON), &s)
+	_ = json.Unmarshal([]byte(opened.SettingsJSON), &s)
 	transport := s.Transport
 	if strings.EqualFold(row.Protocol, "shadowsocks") {
 		transport = inboundcfg.EffectiveSSNetwork(inboundcfg.Settings{Transport: s.Transport, SSNetwork: s.SSNetwork})
@@ -825,13 +901,16 @@ func outboundView(row models.Outbound) map[string]any {
 		"reality_short_id":   s.RealityShortID,
 		"spider_x":           s.SpiderX,
 		"source_inbound_id":  s.SourceInboundID,
-		"chain_managed":      settingsFlagJSON(row.SettingsJSON, "chain_managed"),
-		"route_managed":      settingsFlagJSON(row.SettingsJSON, "route_managed"),
-		"settings_json":      row.SettingsJSON,
+		"chain_managed":      boolFromJSONAny(s.ChainManaged),
+		"route_managed":      boolFromJSONAny(s.RouteManaged),
+		"settings_json":      opened.SettingsJSON,
 	}
 }
 
 func nodemgtOutboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		models.Outbound
 		Address          string `json:"address"`
@@ -875,6 +954,22 @@ func nodemgtOutboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 			p.Security = "tls"
 		}
 	}
+	st := nodemgtST()
+	if strings.TrimSpace(p.Password) == maskedSecretPlaceholder {
+		if strings.TrimSpace(p.ID) != "" {
+			if existing, err := st.GetOutbound(p.ID); err == nil && existing != nil {
+				var old struct {
+					Password string `json:"password"`
+				}
+				_ = json.Unmarshal([]byte(existing.SettingsJSON), &old)
+				p.Password = old.Password
+			} else {
+				p.Password = ""
+			}
+		} else {
+			p.Password = ""
+		}
+	}
 	cfgMap := map[string]any{
 		"address":            p.Address,
 		"port":               p.DestPort,
@@ -907,7 +1002,6 @@ func nodemgtOutboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 	}
 	cfg, _ := json.Marshal(cfgMap)
 	p.SettingsJSON = string(cfg)
-	st := nodemgtST()
 	if err := st.UpsertOutbound(&p.Outbound); err != nil {
 		return nil, nodemgtErr(err)
 	}
@@ -917,6 +1011,9 @@ func nodemgtOutboundUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *
 }
 
 func nodemgtOutboundDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID string `json:"id"`
 	}
@@ -965,6 +1062,7 @@ func routeView(row models.Route) map[string]any {
 		Source            string `json:"source"`
 		BackupDirect      bool   `json:"backup_direct"`
 		FallbackDirect    bool   `json:"fallback_direct"`
+		ChainManaged      any    `json:"chain_managed"`
 	}
 	_ = json.Unmarshal([]byte(row.RuleJSON), &s)
 	outbound := strings.TrimSpace(s.PrimaryOutboundID)
@@ -1000,7 +1098,7 @@ func routeView(row models.Route) map[string]any {
 		"protocol":           s.Protocol,
 		"port":               s.Port,
 		"source":             s.Source,
-		"chain_managed":      settingsFlagJSON(row.RuleJSON, "chain_managed"),
+		"chain_managed":      boolFromJSONAny(s.ChainManaged),
 		"rule_json":          row.RuleJSON,
 	}
 }
@@ -1093,9 +1191,6 @@ func nodemgtUserList(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.Json
 		NodeUUID string `json:"node_uuid"`
 	}
 	_ = req.BindParams(&p)
-	if _, err := nodemgtOps().SyncDueTrafficResets(time.Now().UTC()); err != nil {
-		logger.Warnf("nodemgt", "traffic reset sync: %v", err)
-	}
 	rows, err := nodemgtST().ListUserViews(p.NodeUUID)
 	if err != nil {
 		return nil, nodemgtErr(err)
@@ -1164,7 +1259,7 @@ func nodemgtUserUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 			}
 		}
 		planID := strings.TrimSpace(p.PlanID)
-		if planID != "" {
+		if planID != "" && p.RateLimitBps <= 0 {
 			if plan, err := st.GetPlan(planID); err == nil && plan != nil {
 				p.RateLimitBps = plan.RateLimitBps
 			}
@@ -1242,6 +1337,23 @@ func nodemgtUserClearIPs(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rp
 	if err := st.ClearUserIPs(p.ID); err != nil {
 		return nil, nodemgtErr(err)
 	}
+	nodes, _ := st.NodeUUIDsForUser(p.ID)
+	if len(nodes) > 0 {
+		payload, _ := json.Marshal(map[string]any{"user_ids": []string{p.ID}})
+		for _, nodeUUID := range nodes {
+			nodeUUID = strings.TrimSpace(nodeUUID)
+			if nodeUUID == "" {
+				continue
+			}
+			_ = st.EnqueueCommand(&models.ControlCommand{
+				NodeUUID:    nodeUUID,
+				Kind:        "clearUserIPs",
+				PayloadJSON: string(payload),
+				Status:      models.CmdPending,
+			})
+		}
+		nodemgtPushNodes(st, nodes...)
+	}
 	_ = nodemgtAudit(ctx, st, "nodemgt.user.clearIPs", p.ID, nodemgtUserLabel(st, p.ID))
 	return map[string]any{"ok": true}, nil
 }
@@ -1289,6 +1401,9 @@ func nodemgtUserSetStatus(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 }
 
 func nodemgtCredentialIssue(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		UserID string `json:"user_id"`
 		Kind   string `json:"kind"`
@@ -1324,6 +1439,9 @@ func nodemgtCredentialIssue(ctx context.Context, req *rpc.JsonRpcRequest) (any, 
 }
 
 func nodemgtCredentialRotate(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID string `json:"id"`
 	}
@@ -1338,6 +1456,9 @@ func nodemgtCredentialRotate(ctx context.Context, req *rpc.JsonRpcRequest) (any,
 }
 
 func nodemgtCredentialRevoke(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID string `json:"id"`
 	}
@@ -1424,7 +1545,9 @@ func nodemgtAssign(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.Json
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
-	nodemgtPushUser(nodemgtST(), p.UserID)
+	st := nodemgtST()
+	_ = nodemgtAudit(ctx, st, "nodemgt.assign", p.UserID, nodemgtUserLabel(st, p.UserID), map[string]string{"plan": p.PlanID})
+	nodemgtPushUser(st, p.UserID)
 	return asg, nil
 }
 
@@ -1438,7 +1561,9 @@ func nodemgtRenew(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonR
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
-	nodemgtPushUser(nodemgtST(), p.UserID)
+	st := nodemgtST()
+	_ = nodemgtAudit(ctx, st, "nodemgt.renew", p.UserID, nodemgtUserLabel(st, p.UserID))
+	nodemgtPushUser(st, p.UserID)
 	return asg, nil
 }
 
@@ -1452,26 +1577,35 @@ func nodemgtTopup(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonR
 	if err := nodemgtOps().Topup(nodemgtActor(ctx), p.UserID, p.OperationID, p.ExtraBytes); err != nil {
 		return nil, nodemgtErr(err)
 	}
-	nodemgtPushUser(nodemgtST(), p.UserID)
+	st := nodemgtST()
+	_ = nodemgtAudit(ctx, st, "nodemgt.topup", p.UserID, nodemgtUserLabel(st, p.UserID), map[string]string{"bytes": fmt.Sprintf("%d", p.ExtraBytes)})
+	nodemgtPushUser(st, p.UserID)
 	return map[string]any{"ok": true}, nil
 }
 
 func nodemgtModify(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	var p struct {
-		UserID      string `json:"user_id"`
-		OperationID string `json:"operation_id"`
-		QuotaBytes  *int64 `json:"quota_bytes"`
-		RateLimit   *int64 `json:"rate_limit_bps"`
-		Devices     *int   `json:"device_limit"`
+		UserID      string     `json:"user_id"`
+		OperationID string     `json:"operation_id"`
+		QuotaBytes  *int64     `json:"quota_bytes"`
+		RateLimit   *int64     `json:"rate_limit_bps"`
+		Devices     *int       `json:"device_limit"`
+		ExpiresAt   *time.Time `json:"expires_at"`
 	}
 	_ = req.BindParams(&p)
-	if err := nodemgtOps().Modify(nodemgtActor(ctx), p.UserID, p.OperationID, p.QuotaBytes, p.RateLimit, p.Devices, nil); err != nil {
+	if err := nodemgtOps().Modify(nodemgtActor(ctx), p.UserID, p.OperationID, p.QuotaBytes, p.RateLimit, p.Devices, p.ExpiresAt); err != nil {
 		return nil, nodemgtErr(err)
 	}
+	st := nodemgtST()
+	_ = nodemgtAudit(ctx, st, "nodemgt.modify", p.UserID, nodemgtUserLabel(st, p.UserID))
+	nodemgtPushUser(st, p.UserID)
 	return map[string]any{"ok": true}, nil
 }
 
-func nodemgtCertList(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+func nodemgtCertList(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		NodeUUID string `json:"node_uuid"`
 	}
@@ -1483,7 +1617,10 @@ func nodemgtCertList(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.Json
 	return rows, nil
 }
 
-func nodemgtRootCertList(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+func nodemgtRootCertList(ctx context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	rows, err := nodemgtST().ListRootCerts()
 	if err != nil {
 		return nil, nodemgtErr(err)
@@ -1496,6 +1633,9 @@ func nodemgtRootCertList(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.Js
 }
 
 func nodemgtRootCertIssue(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID     string `json:"id"`
 		Domain string `json:"domain"`
@@ -1503,9 +1643,18 @@ func nodemgtRootCertIssue(ctx context.Context, req *rpc.JsonRpcRequest) (any, *r
 		Sync   bool   `json:"sync"`
 	}
 	_ = req.BindParams(&p)
+	if strings.TrimSpace(p.Domain) == "" {
+		return nil, rpc.MakeError(rpc.InvalidParams, "domain required", nil)
+	}
+	if err := cert.ValidateDomain(p.Domain); err != nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+	}
 	domain := cert.RootDomain(p.Domain)
 	if domain == "" {
 		return nil, rpc.MakeError(rpc.InvalidParams, "domain required", nil)
+	}
+	if err := cert.ValidateDomain(domain); err != nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
 	}
 	st := nodemgtST()
 	if !p.TestCA {
@@ -1572,6 +1721,9 @@ func issueRootCertAsync(id string, testCA bool) {
 }
 
 func nodemgtRootCertDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID string `json:"id"`
 	}
@@ -1607,6 +1759,9 @@ func rootCertView(row models.RootCertificate) map[string]any {
 }
 
 func nodemgtRootCertSetAutoRenew(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID        string `json:"id"`
 		AutoRenew bool   `json:"auto_renew"`
@@ -1629,6 +1784,9 @@ func nodemgtRootCertSetAutoRenew(ctx context.Context, req *rpc.JsonRpcRequest) (
 }
 
 func nodemgtCertSetAutoRenew(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID        string `json:"id"`
 		AutoRenew bool   `json:"auto_renew"`
@@ -1651,6 +1809,9 @@ func nodemgtCertSetAutoRenew(ctx context.Context, req *rpc.JsonRpcRequest) (any,
 }
 
 func nodemgtCertRequest(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID            string `json:"id"`
 		NodeUUID      string `json:"node_uuid"`
@@ -1677,6 +1838,12 @@ func nodemgtCertRequest(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		source = models.CertSourceFile
 	}
 	if source == models.CertSourceRoot {
+		if strings.TrimSpace(p.ShareDomain) == "" {
+			return nil, rpc.MakeError(rpc.InvalidParams, "subdomain required", nil)
+		}
+		if err := cert.ValidateDomain(p.ShareDomain); err != nil {
+			return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+		}
 		root, err := st.GetRootCert(p.RootCertID)
 		if err != nil {
 			return nil, nodemgtErr(err)
@@ -1697,6 +1864,14 @@ func nodemgtCertRequest(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	}
 	if strings.TrimSpace(p.Domain) == "" {
 		return nil, rpc.MakeError(rpc.InvalidParams, "domain and node required", nil)
+	}
+	if err := cert.ValidateDomain(p.Domain); err != nil {
+		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+	}
+	if strings.TrimSpace(p.ShareDomain) != "" {
+		if err := cert.ValidateDomain(p.ShareDomain); err != nil {
+			return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+		}
 	}
 	cover := cert.DefaultCoverWildcard(p.Domain)
 	if p.CoverWildcard != nil {
@@ -1776,6 +1951,9 @@ func nodemgtCertRequest(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 }
 
 func nodemgtCertDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID string `json:"id"`
 	}
@@ -1796,7 +1974,10 @@ func nodemgtCertDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	return map[string]any{"ok": true}, nil
 }
 
-func nodemgtSubList(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+func nodemgtSubList(ctx context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	st := nodemgtST()
 	if err := st.HideRelaySubscriptions(); err != nil {
 		return nil, nodemgtErr(err)
@@ -1805,19 +1986,34 @@ func nodemgtSubList(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpc
 	if err != nil {
 		return nil, nodemgtErr(err)
 	}
-	byUser := map[string]models.NodeUser{}
+	rows, err := st.ListSubscriptions()
+	if err != nil {
+		return nil, nodemgtErr(err)
+	}
+	hasSub := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		hasSub[r.UserID] = true
+	}
+	byUser := make(map[string]models.NodeUser, len(users))
+	createdAny := false
 	for _, user := range users {
 		if models.IsRelayUser(user.Kind, user.Username) {
 			continue
 		}
 		byUser[user.ID] = user
-		if _, err := st.EnsureSubscription(user.ID); err != nil {
-			return nil, nodemgtErr(err)
+		if !hasSub[user.ID] {
+			if _, err := st.EnsureSubscription(user.ID); err != nil {
+				return nil, nodemgtErr(err)
+			}
+			hasSub[user.ID] = true
+			createdAny = true
 		}
 	}
-	rows, err := st.ListSubscriptions()
-	if err != nil {
-		return nil, nodemgtErr(err)
+	if createdAny {
+		rows, err = st.ListSubscriptions()
+		if err != nil {
+			return nil, nodemgtErr(err)
+		}
 	}
 	cfg, err := subhttp.LoadConfig(st)
 	if err != nil {
@@ -1849,6 +2045,9 @@ func nodemgtSubList(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpc
 }
 
 func nodemgtSubUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var row models.Subscription
 	if err := req.BindParams(&row); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
@@ -1876,6 +2075,9 @@ func nodemgtSubUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.J
 }
 
 func nodemgtSubDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID string `json:"id"`
 	}
@@ -1896,7 +2098,10 @@ func nodemgtSubDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.J
 	return map[string]any{"ok": true}, nil
 }
 
-func nodemgtSubPreview(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+func nodemgtSubPreview(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p struct {
 		ID        string `json:"id"`
 		Format    string `json:"format"`
@@ -1946,21 +2151,12 @@ func nodemgtControlStatus(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	_ = req.BindParams(&p)
 	st := nodemgtST()
 	if strings.TrimSpace(p.NodeUUID) != "" {
-		pending, err := st.PendingCommands(p.NodeUUID)
-		if err != nil {
+		cmd, err := st.LatestCommandForNode(p.NodeUUID)
+		if err == nil && cmd != nil {
+			return nodemgtCommandView(*cmd), nil
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return nil, nodemgtErr(err)
-		}
-		latest, err := st.LatestCommands()
-		if err != nil {
-			return nil, nodemgtErr(err)
-		}
-		for _, cmd := range latest {
-			if cmd.NodeUUID == p.NodeUUID {
-				return nodemgtCommandView(cmd), nil
-			}
-		}
-		if len(pending) > 0 {
-			return nodemgtCommandView(pending[len(pending)-1]), nil
 		}
 		return map[string]any{"node_uuid": p.NodeUUID, "status": "not_started"}, nil
 	}
@@ -2020,7 +2216,10 @@ func nodemgtDiagStatus(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.Js
 	}, nil
 }
 
-func nodemgtSettingsGet(_ context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+func nodemgtSettingsGet(ctx context.Context, _ *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	st := nodemgtST()
 	token, _ := st.GetSetting("cf_api_token")
 	email, _ := st.GetSetting("acme_email")
@@ -2145,9 +2344,21 @@ func nodemgtSettingsChanged(p nodemgtSettingsPatch, prev nodemgtSettingsSnapshot
 }
 
 func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
+	if err := denyAPIKey(ctx); err != nil {
+		return nil, err
+	}
 	var p nodemgtSettingsPatch
 	if err := req.BindParams(&p); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
+	}
+	if p.SubPath != nil {
+		cand := subhttp.NormalizePath(*p.SubPath)
+		if cand == "/" {
+			return nil, rpc.MakeError(rpc.InvalidParams, "subscription path required", nil)
+		}
+		if subhttp.IsReservedPath(cand) {
+			return nil, rpc.MakeError(rpc.InvalidParams, "subscription path is reserved", nil)
+		}
 	}
 	st := nodemgtST()
 	prev := nodemgtSettingsSnapshotOf(st)
@@ -2199,8 +2410,8 @@ func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	}
 	if p.SubPath != nil {
 		path := subhttp.NormalizePath(*p.SubPath)
-		if path == "/" {
-			return nil, rpc.MakeError(rpc.InvalidParams, "subscription path required", nil)
+		if path == "/" || subhttp.IsReservedPath(path) {
+			return nil, rpc.MakeError(rpc.InvalidParams, "subscription path is reserved", nil)
 		}
 		if err := st.SetSetting("sub_path", path); err != nil {
 			return nil, nodemgtErr(err)
@@ -2231,6 +2442,7 @@ func nodemgtSettingsSet(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 			return nil, nodemgtErr(err)
 		}
 	}
+	subhttp.InvalidateCache()
 	changed := nodemgtSettingsChanged(p, prev)
 	if p.SubPublicHost != nil || p.SubReuseHTTPS != nil || restartSub {
 		cfg, err := subhttp.LoadConfig(st)
@@ -2282,19 +2494,4 @@ func nodemgtNodeUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 	_ = nodemgtAudit(ctx, st, "nodemgt.node.upsert", p.NodeUUID, clients.DisplayName(p.NodeUUID), map[string]string{"stack": row.DialStack})
 	nodemgtPush(st, p.NodeUUID)
 	return row, nil
-}
-
-func settingsFlagJSON(raw, key string) bool {
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return false
-	}
-	switch v := m[key].(type) {
-	case bool:
-		return v
-	case string:
-		return strings.EqualFold(v, "true") || v == "1"
-	default:
-		return false
-	}
 }

@@ -31,6 +31,8 @@ var (
 	ErrUserDisabled = errors.New("nodemgt: user disabled")
 	ErrUserExpired  = errors.New("nodemgt: user expired")
 	ErrForbidden    = errors.New("nodemgt: node mismatch")
+
+	OnSubSettingChange func()
 )
 
 type Store struct {
@@ -82,6 +84,9 @@ func (s *Store) DB() *gorm.DB { return s.db }
 
 func (s *Store) Migrate() error {
 	if err := dropLegacyUserIPIndex(s.db); err != nil {
+		return err
+	}
+	if err := dropLegacySubscriptionTokenIndex(s.db); err != nil {
 		return err
 	}
 	if err := s.db.AutoMigrate(models.All()...); err != nil {
@@ -139,6 +144,285 @@ func dropLegacyUserIPIndex(db *gorm.DB) error {
 	return nil
 }
 
+func dropLegacySubscriptionTokenIndex(db *gorm.DB) error {
+	m := db.Migrator()
+	if !m.HasTable(&models.Subscription{}) {
+		return nil
+	}
+	for _, name := range []string{"idx_nodemgt_subscriptions_token", "uni_nodemgt_subscriptions_token"} {
+		if !m.HasIndex(&models.Subscription{}, name) {
+			continue
+		}
+		if err := m.DropIndex(&models.Subscription{}, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sealInboundSecrets(settingsJSON, streamJSON string) (string, string, error) {
+	outSettings := settingsJSON
+	if strings.TrimSpace(settingsJSON) != "" {
+		var m map[string]any
+		if json.Unmarshal([]byte(settingsJSON), &m) == nil && m != nil {
+			changed := false
+			for _, key := range []string{"reality_private_key", "ss_password"} {
+				if raw, ok := m[key].(string); ok && strings.TrimSpace(raw) != "" {
+					enc, err := secretcrypt.Seal(raw)
+					if err != nil {
+						return "", "", err
+					}
+					if enc != raw {
+						m[key] = enc
+						changed = true
+					}
+				}
+			}
+			if accs, ok := m["accounts"].([]any); ok {
+				for i := range accs {
+					accMap, ok := accs[i].(map[string]any)
+					if !ok {
+						continue
+					}
+					if pass, ok := accMap["pass"].(string); ok && strings.TrimSpace(pass) != "" {
+						enc, err := secretcrypt.Seal(pass)
+						if err != nil {
+							return "", "", err
+						}
+						if enc != pass {
+							accMap["pass"] = enc
+							changed = true
+						}
+					}
+				}
+			}
+			if changed {
+				if b, err := json.Marshal(m); err == nil {
+					outSettings = string(b)
+				}
+			}
+		}
+	}
+	outStream := streamJSON
+	if strings.TrimSpace(streamJSON) != "" {
+		var sm map[string]any
+		if json.Unmarshal([]byte(streamJSON), &sm) == nil && sm != nil {
+			if reality, ok := sm["realitySettings"].(map[string]any); ok {
+				if pk, ok := reality["privateKey"].(string); ok && strings.TrimSpace(pk) != "" {
+					enc, err := secretcrypt.Seal(pk)
+					if err != nil {
+						return "", "", err
+					}
+					if enc != pk {
+						reality["privateKey"] = enc
+						if b, err := json.Marshal(sm); err == nil {
+							outStream = string(b)
+						}
+					}
+				}
+			}
+		}
+	}
+	return outSettings, outStream, nil
+}
+
+const sqliteChunkSize = 500
+
+func chunkStrings(ids []string, size int) [][]string {
+	if size <= 0 {
+		size = sqliteChunkSize
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	chunks := make([][]string, 0, (len(ids)+size-1)/size)
+	for start := 0; start < len(ids); start += size {
+		end := start + size
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunks = append(chunks, ids[start:end])
+	}
+	return chunks
+}
+
+func openInboundSecretsStrict(row models.Inbound) (models.Inbound, error) {
+	if strings.TrimSpace(row.SettingsJSON) != "" && strings.Contains(row.SettingsJSON, secretcrypt.Prefix) {
+		var m map[string]any
+		if json.Unmarshal([]byte(row.SettingsJSON), &m) == nil && m != nil {
+			changed := false
+			for _, key := range []string{"reality_private_key", "ss_password"} {
+				if raw, ok := m[key].(string); ok && strings.HasPrefix(raw, secretcrypt.Prefix) {
+					plain, err := secretcrypt.Open(raw)
+					if err != nil {
+						return row, fmt.Errorf("decrypt inbound %s %s: %w", row.ID, key, err)
+					}
+					m[key] = plain
+					changed = true
+				}
+			}
+			if accs, ok := m["accounts"].([]any); ok {
+				for i := range accs {
+					accMap, ok := accs[i].(map[string]any)
+					if !ok {
+						continue
+					}
+					if pass, ok := accMap["pass"].(string); ok && strings.HasPrefix(pass, secretcrypt.Prefix) {
+						plain, err := secretcrypt.Open(pass)
+						if err != nil {
+							return row, fmt.Errorf("decrypt inbound %s account password: %w", row.ID, err)
+						}
+						accMap["pass"] = plain
+						changed = true
+					}
+				}
+			}
+			if changed {
+				if b, err := json.Marshal(m); err == nil {
+					row.SettingsJSON = string(b)
+				}
+			}
+		}
+	}
+	if strings.TrimSpace(row.StreamJSON) != "" && strings.Contains(row.StreamJSON, secretcrypt.Prefix) {
+		var sm map[string]any
+		if json.Unmarshal([]byte(row.StreamJSON), &sm) == nil && sm != nil {
+			if reality, ok := sm["realitySettings"].(map[string]any); ok {
+				if pk, ok := reality["privateKey"].(string); ok && strings.HasPrefix(pk, secretcrypt.Prefix) {
+					plain, err := secretcrypt.Open(pk)
+					if err != nil {
+						return row, fmt.Errorf("decrypt inbound %s stream privateKey: %w", row.ID, err)
+					}
+					reality["privateKey"] = plain
+					if b, err := json.Marshal(sm); err == nil {
+						row.StreamJSON = string(b)
+					}
+				}
+			}
+		}
+	}
+	return row, nil
+}
+
+func openOutboundSecretsStrict(row models.Outbound) (models.Outbound, error) {
+	if strings.TrimSpace(row.SettingsJSON) == "" || !strings.Contains(row.SettingsJSON, secretcrypt.Prefix) {
+		return row, nil
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(row.SettingsJSON), &m) != nil || m == nil {
+		return row, nil
+	}
+	if pass, ok := m["password"].(string); ok && strings.HasPrefix(pass, secretcrypt.Prefix) {
+		plain, err := secretcrypt.Open(pass)
+		if err != nil {
+			return row, fmt.Errorf("decrypt outbound %s password: %w", row.ID, err)
+		}
+		m["password"] = plain
+		if b, err := json.Marshal(m); err == nil {
+			row.SettingsJSON = string(b)
+		}
+	}
+	return row, nil
+}
+
+func OpenInboundSecrets(row models.Inbound) models.Inbound {
+	if strings.TrimSpace(row.SettingsJSON) != "" && strings.Contains(row.SettingsJSON, secretcrypt.Prefix) {
+		var m map[string]any
+		if json.Unmarshal([]byte(row.SettingsJSON), &m) == nil && m != nil {
+			changed := false
+			for _, key := range []string{"reality_private_key", "ss_password"} {
+				if raw, ok := m[key].(string); ok && strings.HasPrefix(raw, secretcrypt.Prefix) {
+					if plain, err := secretcrypt.Open(raw); err == nil {
+						m[key] = plain
+						changed = true
+					}
+				}
+			}
+			if accs, ok := m["accounts"].([]any); ok {
+				for i := range accs {
+					accMap, ok := accs[i].(map[string]any)
+					if !ok {
+						continue
+					}
+					if pass, ok := accMap["pass"].(string); ok && strings.HasPrefix(pass, secretcrypt.Prefix) {
+						if plain, err := secretcrypt.Open(pass); err == nil {
+							accMap["pass"] = plain
+							changed = true
+						}
+					}
+				}
+			}
+			if changed {
+				if b, err := json.Marshal(m); err == nil {
+					row.SettingsJSON = string(b)
+				}
+			}
+		}
+	}
+	if strings.TrimSpace(row.StreamJSON) != "" && strings.Contains(row.StreamJSON, secretcrypt.Prefix) {
+		var sm map[string]any
+		if json.Unmarshal([]byte(row.StreamJSON), &sm) == nil && sm != nil {
+			if reality, ok := sm["realitySettings"].(map[string]any); ok {
+				if pk, ok := reality["privateKey"].(string); ok && strings.HasPrefix(pk, secretcrypt.Prefix) {
+					if plain, err := secretcrypt.Open(pk); err == nil {
+						reality["privateKey"] = plain
+						if b, err := json.Marshal(sm); err == nil {
+							row.StreamJSON = string(b)
+						}
+					}
+				}
+			}
+		}
+	}
+	return row
+}
+
+func sealOutboundSecrets(settingsJSON string) (string, error) {
+	if strings.TrimSpace(settingsJSON) == "" {
+		return settingsJSON, nil
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(settingsJSON), &m) != nil || m == nil {
+		return settingsJSON, nil
+	}
+	pass, ok := m["password"].(string)
+	if !ok || strings.TrimSpace(pass) == "" {
+		return settingsJSON, nil
+	}
+	enc, err := secretcrypt.Seal(pass)
+	if err != nil {
+		return "", err
+	}
+	if enc == pass {
+		return settingsJSON, nil
+	}
+	m["password"] = enc
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func OpenOutboundSecrets(row models.Outbound) models.Outbound {
+	if strings.TrimSpace(row.SettingsJSON) == "" || !strings.Contains(row.SettingsJSON, secretcrypt.Prefix) {
+		return row
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(row.SettingsJSON), &m) != nil || m == nil {
+		return row
+	}
+	if pass, ok := m["password"].(string); ok && strings.HasPrefix(pass, secretcrypt.Prefix) {
+		if plain, err := secretcrypt.Open(pass); err == nil {
+			m["password"] = plain
+			if b, err := json.Marshal(m); err == nil {
+				row.SettingsJSON = string(b)
+			}
+		}
+	}
+	return row
+}
+
 func newID() string { return uuid.NewString() }
 
 func now() time.Time { return time.Now().UTC() }
@@ -149,7 +433,13 @@ func (s *Store) ListInbounds(nodeUUID string) ([]models.Inbound, error) {
 	if nodeUUID != "" {
 		q = q.Where("node_uuid = ?", nodeUUID)
 	}
-	return rows, q.Find(&rows).Error
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i] = OpenInboundSecrets(rows[i])
+	}
+	return rows, nil
 }
 
 func (s *Store) NextInboundSortIndex(nodeUUID string) int {
@@ -195,6 +485,7 @@ func (s *Store) GetInbound(id string) (*models.Inbound, error) {
 		}
 		return nil, err
 	}
+	row = OpenInboundSecrets(row)
 	return &row, nil
 }
 
@@ -212,7 +503,18 @@ func (s *Store) UpsertInbound(row *models.Inbound) error {
 	if row.CreatedAt.IsZero() {
 		row.CreatedAt = row.UpdatedAt
 	}
-	return s.saveAll(row)
+	plainSettings := row.SettingsJSON
+	plainStream := row.StreamJSON
+	sealedSettings, sealedStream, err := sealInboundSecrets(row.SettingsJSON, row.StreamJSON)
+	if err != nil {
+		return err
+	}
+	row.SettingsJSON = sealedSettings
+	row.StreamJSON = sealedStream
+	err = s.saveAll(row)
+	row.SettingsJSON = plainSettings
+	row.StreamJSON = plainStream
+	return err
 }
 
 func (s *Store) DeleteInbound(id string) error {
@@ -244,7 +546,13 @@ func (s *Store) ListOutbounds(nodeUUID string) ([]models.Outbound, error) {
 	if nodeUUID != "" {
 		q = q.Where("node_uuid = ?", nodeUUID)
 	}
-	return rows, q.Find(&rows).Error
+	if err := q.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i] = OpenOutboundSecrets(rows[i])
+	}
+	return rows, nil
 }
 
 func reservedOutboundTag(name string) bool {
@@ -297,7 +605,15 @@ func (s *Store) UpsertOutbound(row *models.Outbound) error {
 	if row.CreatedAt.IsZero() {
 		row.CreatedAt = row.UpdatedAt
 	}
-	return s.saveAll(row)
+	plainSettings := row.SettingsJSON
+	sealedSettings, err := sealOutboundSecrets(row.SettingsJSON)
+	if err != nil {
+		return err
+	}
+	row.SettingsJSON = sealedSettings
+	err = s.saveAll(row)
+	row.SettingsJSON = plainSettings
+	return err
 }
 
 func (s *Store) GetOutbound(id string) (*models.Outbound, error) {
@@ -309,6 +625,7 @@ func (s *Store) GetOutbound(id string) (*models.Outbound, error) {
 		}
 		return nil, err
 	}
+	row = OpenOutboundSecrets(row)
 	return &row, nil
 }
 
@@ -584,6 +901,9 @@ func (s *Store) DeleteUser(id string) error {
 		if err := tx.Where("user_id = ?", id).Delete(&models.Assignment{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("user_id = ?", id).Delete(&models.QuotaLedger{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("scope = ? AND scope_id IN (?)", "subscription", tx.Model(&models.Subscription{}).Select("id").Where("user_id = ?", id)).Delete(&models.SubscriptionTemplateBinding{}).Error; err != nil {
 			return err
 		}
@@ -710,67 +1030,172 @@ func (s *Store) GetUserView(id string) (*UserView, error) {
 }
 
 func (s *Store) userViews(users []models.NodeUser) ([]UserView, error) {
-	inbounds, err := s.ListInbounds("")
-	if err != nil {
-		return nil, err
-	}
-	byInbound := map[string]models.Inbound{}
-	for _, in := range inbounds {
-		byInbound[in.ID] = in
-	}
-	extras, err := s.extraLinksByUser()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]UserView, 0, len(users))
+	filtered := make([]models.NodeUser, 0, len(users))
+	userIDs := make([]string, 0, len(users))
 	for _, user := range users {
 		if models.IsRelayUser(user.Kind, user.Username) {
 			continue
 		}
-		view := UserView{NodeUser: user, InboundIDs: []string{}, InboundNames: []string{}, ExtraLinks: extras[user.ID]}
+		filtered = append(filtered, user)
+		userIDs = append(userIDs, user.ID)
+	}
+	if len(filtered) == 0 {
+		return []UserView{}, nil
+	}
+
+	type credRow struct {
+		UserID  string
+		UUID    string
+		Enabled bool
+	}
+	var credRows []credRow
+	for _, chunk := range chunkStrings(userIDs, sqliteChunkSize) {
+		var part []credRow
+		if err := s.db.Model(&models.Credential{}).
+			Select("user_id, uuid, enabled").
+			Where("user_id IN ?", chunk).
+			Order("created_at ASC").
+			Find(&part).Error; err != nil {
+			return nil, err
+		}
+		credRows = append(credRows, part...)
+	}
+	uuidByUser := make(map[string]string, len(userIDs))
+	for _, cred := range credRows {
+		if cred.Enabled && cred.UUID != "" && uuidByUser[cred.UserID] == "" {
+			uuidByUser[cred.UserID] = cred.UUID
+		}
+	}
+
+	var grantRows []models.Grant
+	for _, chunk := range chunkStrings(userIDs, sqliteChunkSize) {
+		var part []models.Grant
+		if err := s.db.Where("user_id IN ?", chunk).Order("created_at ASC").Find(&part).Error; err != nil {
+			return nil, err
+		}
+		grantRows = append(grantRows, part...)
+	}
+	grantsByUser := make(map[string][]models.Grant, len(userIDs))
+	inboundIDSet := map[string]struct{}{}
+	for _, g := range grantRows {
+		grantsByUser[g.UserID] = append(grantsByUser[g.UserID], g)
+		if g.InboundID != "" {
+			inboundIDSet[g.InboundID] = struct{}{}
+		}
+	}
+
+	inboundNameByID := map[string]string{}
+	if len(inboundIDSet) > 0 {
+		inboundIDs := make([]string, 0, len(inboundIDSet))
+		for id := range inboundIDSet {
+			inboundIDs = append(inboundIDs, id)
+		}
+		type inNameRow struct {
+			ID   string
+			Name string
+		}
+		for _, chunk := range chunkStrings(inboundIDs, sqliteChunkSize) {
+			var inRows []inNameRow
+			if err := s.db.Model(&models.Inbound{}).Select("id, name").Where("id IN ?", chunk).Find(&inRows).Error; err != nil {
+				return nil, err
+			}
+			for _, in := range inRows {
+				inboundNameByID[in.ID] = in.Name
+			}
+		}
+	}
+
+	latestAsg := make(map[string]models.Assignment, len(userIDs))
+	planIDSet := map[string]struct{}{}
+	for _, chunk := range chunkStrings(userIDs, sqliteChunkSize) {
+		var asgRows []models.Assignment
+		if err := s.db.Where("user_id IN ?", chunk).Order("created_at DESC").Find(&asgRows).Error; err != nil {
+			return nil, err
+		}
+		for _, a := range asgRows {
+			if _, ok := latestAsg[a.UserID]; !ok {
+				latestAsg[a.UserID] = a
+				if a.PlanID != "" {
+					planIDSet[a.PlanID] = struct{}{}
+				}
+			}
+		}
+	}
+
+	planByID := map[string]models.Plan{}
+	if len(planIDSet) > 0 {
+		planIDs := make([]string, 0, len(planIDSet))
+		for id := range planIDSet {
+			planIDs = append(planIDs, id)
+		}
+		for _, chunk := range chunkStrings(planIDs, sqliteChunkSize) {
+			var planRows []models.Plan
+			if err := s.db.Where("id IN ?", chunk).Find(&planRows).Error; err != nil {
+				return nil, err
+			}
+			for _, p := range planRows {
+				planByID[p.ID] = p
+			}
+		}
+	}
+
+	ipsByUser := make(map[string][]UserIPView, len(userIDs))
+	for _, chunk := range chunkStrings(userIDs, sqliteChunkSize) {
+		var ipRows []models.UserIP
+		if err := s.db.Where("user_id IN ?", chunk).Order("seen_at DESC").Find(&ipRows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range ipRows {
+			if publicClientIP(row.IP) == "" {
+				continue
+			}
+			ipsByUser[row.UserID] = append(ipsByUser[row.UserID], UserIPView{IP: row.IP, SeenAt: row.SeenAt})
+		}
+	}
+
+	extras := make(map[string][]models.UserExtraLink, len(userIDs))
+	for _, chunk := range chunkStrings(userIDs, sqliteChunkSize) {
+		var extraRows []models.UserExtraLink
+		if err := s.db.Where("user_id IN ?", chunk).Order("sort_index ASC, created_at ASC").Find(&extraRows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range extraRows {
+			extras[row.UserID] = append(extras[row.UserID], row)
+		}
+	}
+
+	at := now()
+	out := make([]UserView, 0, len(filtered))
+	for _, user := range filtered {
+		view := UserView{
+			NodeUser:     user,
+			UUID:         uuidByUser[user.ID],
+			InboundIDs:   []string{},
+			InboundNames: []string{},
+			ExtraLinks:   extras[user.ID],
+		}
 		if view.ExtraLinks == nil {
 			view.ExtraLinks = []models.UserExtraLink{}
 		}
-		creds, err := s.ListCredentials(user.ID)
-		if err != nil {
-			return nil, err
-		}
-		for _, cred := range creds {
-			if cred.Enabled && cred.UUID != "" {
-				view.UUID = cred.UUID
-				break
-			}
-		}
-		grants, err := s.ListGrants(user.ID)
-		if err != nil {
-			return nil, err
-		}
-		for _, g := range grants {
+		for _, g := range grantsByUser[user.ID] {
 			view.InboundIDs = append(view.InboundIDs, g.InboundID)
-			if in, ok := byInbound[g.InboundID]; ok {
-				view.InboundNames = append(view.InboundNames, in.Name)
+			if name, ok := inboundNameByID[g.InboundID]; ok {
+				view.InboundNames = append(view.InboundNames, name)
 			}
 		}
-		asg, err := s.ListAssignments(user.ID)
-		if err != nil {
-			return nil, err
-		}
-		if len(asg) > 0 {
-			view.PlanID = asg[0].PlanID
-			view.AssignmentEndsAt = asg[0].EndsAt
-			if plan, err := s.GetPlan(asg[0].PlanID); err == nil {
+		if asg, ok := latestAsg[user.ID]; ok {
+			view.PlanID = asg.PlanID
+			view.AssignmentEndsAt = asg.EndsAt
+			if plan, pok := planByID[asg.PlanID]; pok {
 				view.PlanName = plan.Name
-				view.RateLimitBps = plan.RateLimitBps
+				if view.RateLimitBps <= 0 && (asg.EndsAt == nil || asg.EndsAt.After(at)) {
+					view.RateLimitBps = plan.RateLimitBps
+				}
 			}
 		}
-		ips, err := s.ListUserIPs(user.ID)
-		if err != nil {
-			return nil, err
-		}
-		at := now()
 		view.Online = userOnline(user.LastSeenAt, at)
 		if view.Online {
-			view.OnlineIPs = concurrentUserIPs(ips, at)
+			view.OnlineIPs = concurrentUserIPs(ipsByUser[user.ID], at)
 		} else {
 			view.OnlineIPs = []UserIPView{}
 		}
@@ -1241,6 +1666,55 @@ func (s *Store) ApplyUsageBatch(userID, opID string, bytes int64) error {
 	return ErrNotFound
 }
 
+func UsageDedupOpID(nodeUUID, batchID, userID string) string {
+	sum := sha256.Sum256([]byte("usage:" + strings.TrimSpace(nodeUUID) + ":" + strings.TrimSpace(batchID) + ":" + strings.TrimSpace(userID)))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Store) AddUserUsage(nodeUUID, userID, batchID string, bytes int64) error {
+	userID = strings.TrimSpace(userID)
+	batchID = strings.TrimSpace(batchID)
+	if userID == "" || batchID == "" {
+		return ErrInvalid
+	}
+	if bytes <= 0 {
+		return nil
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		inner := New(tx)
+		legacyOp := userID + ":" + batchID
+		if strings.TrimSpace(nodeUUID) == "" {
+			seen, err := inner.UsageBatchSeen(userID, legacyOp)
+			if err != nil {
+				return err
+			}
+			if seen {
+				return ErrConflict
+			}
+		}
+		dedupOp := UsageDedupOpID(nodeUUID, batchID, userID)
+		if err := inner.AddLedger(userID, ledgerReasonUsageDedup, dedupOp, bytes); err != nil {
+			return err
+		}
+		lastOp := legacyOp
+		if strings.TrimSpace(nodeUUID) != "" {
+			lastOp = dedupOp
+		}
+		res := tx.Model(&models.NodeUser{}).Where("id = ?", userID).Updates(map[string]any{
+			"used_bytes":    gorm.Expr("used_bytes + ?", bytes),
+			"last_usage_op": lastOp,
+			"updated_at":    now(),
+		})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
 func (s *Store) AddLedger(userID, reason, opID string, delta int64) error {
 	if opID == "" {
 		opID = newID()
@@ -1393,9 +1867,11 @@ func (s *Store) UpsertSubscription(row *models.Subscription) error {
 	}
 	plain := row.Token
 	if strings.HasPrefix(plain, secretcrypt.Prefix) {
-		if opened, err := secretcrypt.Open(plain); err == nil {
-			plain = opened
+		opened, err := secretcrypt.Open(plain)
+		if err != nil {
+			return fmt.Errorf("decrypt subscription token: %w", err)
 		}
+		plain = opened
 	}
 	if plain == "" {
 		tok, err := RandomToken(16)
@@ -1652,19 +2128,31 @@ func (s *Store) MarkCommandSent(operationID string) error {
 
 func (s *Store) LatestCommands() ([]models.ControlCommand, error) {
 	var rows []models.ControlCommand
-	if err := s.db.Omit("PayloadJSON").Order("created_at DESC, rowid DESC").Find(&rows).Error; err != nil {
+	subQuery := s.db.Table("nodemgt_control_commands").
+		Select("id, ROW_NUMBER() OVER (PARTITION BY node_uuid ORDER BY created_at DESC, rowid DESC) AS rn")
+	err := s.db.Omit("PayloadJSON").
+		Where("id IN (?)", s.db.Table("(?) AS ranked", subQuery).Select("id").Where("rn = 1")).
+		Order("created_at DESC, rowid DESC").
+		Find(&rows).Error
+	if err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	out := make([]models.ControlCommand, 0, len(rows))
-	for _, row := range rows {
-		if seen[row.NodeUUID] {
-			continue
-		}
-		seen[row.NodeUUID] = true
-		out = append(out, row)
+	return rows, nil
+}
+
+func (s *Store) LatestCommandForNode(nodeUUID string) (*models.ControlCommand, error) {
+	nodeUUID = strings.TrimSpace(nodeUUID)
+	if nodeUUID == "" {
+		return nil, ErrNotFound
 	}
-	return out, nil
+	var row models.ControlCommand
+	if err := s.db.Omit("PayloadJSON").Where("node_uuid = ?", nodeUUID).Order("created_at DESC, rowid DESC").First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &row, nil
 }
 
 func (s *Store) GetCommand(operationID string) (*models.ControlCommand, error) {
@@ -1726,7 +2214,11 @@ func (s *Store) GetSetting(key string) (string, error) {
 }
 
 func (s *Store) DeleteSetting(key string) error {
-	return s.db.Where("key = ?", key).Delete(&models.Setting{}).Error
+	err := s.db.Where("key = ?", key).Delete(&models.Setting{}).Error
+	if err == nil && strings.HasPrefix(key, "sub_") && OnSubSettingChange != nil {
+		OnSubSettingChange()
+	}
+	return err
 }
 
 func (s *Store) SetSetting(key, value string) error {
@@ -1738,5 +2230,9 @@ func (s *Store) SetSetting(key, value string) error {
 		value = enc
 	}
 	row := models.Setting{Key: key, Value: value, UpdatedAt: now()}
-	return s.db.Save(&row).Error
+	err := s.db.Save(&row).Error
+	if err == nil && strings.HasPrefix(key, "sub_") && OnSubSettingChange != nil {
+		OnSubSettingChange()
+	}
+	return err
 }

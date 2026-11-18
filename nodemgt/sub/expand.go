@@ -1,24 +1,65 @@
 package sub
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/nuomiiiii/lite/nodemgt/models"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
-	extraFetchTimeout = 6 * time.Second
-	extraFetchMaxBody = 2 << 20
-	extraFetchCache   = 5 * time.Minute
+	extraFetchTimeout     = 6 * time.Second
+	extraFetchMaxBody     = 2 << 20
+	extraFetchCache       = 5 * time.Minute
+	extraFetchNegCacheTTL = 30 * time.Second
+	extraCacheMaxEntries  = 512
 )
+
+var (
+	errBlockedFetchAddress = errors.New("private or reserved fetch address is blocked")
+	allowLoopbackForTest   bool
+	extraFlight            singleflight.Group
+)
+
+var blockedFetchPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("::/128"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/32"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("fc00::/7"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("ff00::/8"),
+}
 
 type FetchStatus struct {
 	ID  string
@@ -27,8 +68,10 @@ type FetchStatus struct {
 }
 
 type extraCacheEntry struct {
-	until time.Time
-	links []string
+	until    time.Time
+	negUntil time.Time
+	lastErr  string
+	links    []string
 }
 
 var extraCache = struct {
@@ -36,8 +79,83 @@ var extraCache = struct {
 	items map[string]extraCacheEntry
 }{items: map[string]extraCacheEntry{}}
 
+func isBlockedFetchAddr(addr netip.Addr) bool {
+	if !addr.IsValid() {
+		return true
+	}
+	unmapped := addr.Unmap()
+	if allowLoopbackForTest && unmapped.IsLoopback() {
+		return false
+	}
+	if unmapped.IsLoopback() || unmapped.IsPrivate() || unmapped.IsLinkLocalUnicast() || unmapped.IsLinkLocalMulticast() || unmapped.IsMulticast() || unmapped.IsUnspecified() {
+		return true
+	}
+	for _, p := range blockedFetchPrefixes {
+		if p.Contains(unmapped) {
+			return true
+		}
+	}
+	return false
+}
+
+func safeExtraDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	cleanHost := strings.Trim(host, "[]")
+	if cleanHost == "" {
+		return nil, errBlockedFetchAddress
+	}
+	var addrs []netip.Addr
+	if parsed, err := netip.ParseAddr(cleanHost); err == nil {
+		if isBlockedFetchAddr(parsed) {
+			return nil, errBlockedFetchAddress
+		}
+		addrs = []netip.Addr{parsed.Unmap()}
+	} else {
+		if !allowLoopbackForTest && (strings.EqualFold(cleanHost, "localhost") || strings.HasSuffix(strings.ToLower(cleanHost), ".localhost")) {
+			return nil, errBlockedFetchAddress
+		}
+		resolved, err := net.DefaultResolver.LookupNetIP(ctx, "ip", cleanHost)
+		if err != nil || len(resolved) == 0 {
+			if err != nil {
+				return nil, err
+			}
+			return nil, errBlockedFetchAddress
+		}
+		for _, candidate := range resolved {
+			if isBlockedFetchAddr(candidate) {
+				return nil, errBlockedFetchAddress
+			}
+			addrs = append(addrs, candidate.Unmap())
+		}
+	}
+	dialer := &net.Dialer{Timeout: extraFetchTimeout}
+	var lastErr error
+	for _, ip := range addrs {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errBlockedFetchAddress
+}
+
 var extraHTTPClient = &http.Client{
 	Timeout: extraFetchTimeout,
+	Transport: &http.Transport{
+		Proxy:                 nil,
+		DialContext:           safeExtraDialContext,
+		TLSHandshakeTimeout:   4 * time.Second,
+		ResponseHeaderTimeout: extraFetchTimeout,
+		IdleConnTimeout:       30 * time.Second,
+		MaxIdleConns:          16,
+	},
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if err := guardFetchURL(req.URL); err != nil {
 			return err
@@ -114,7 +232,44 @@ func guardFetchURL(u *url.URL) error {
 	if host == "" {
 		return fmt.Errorf("empty host")
 	}
+	if !allowLoopbackForTest && (host == "localhost" || strings.HasSuffix(host, ".localhost")) {
+		return errBlockedFetchAddress
+	}
+	if parsed, err := netip.ParseAddr(host); err == nil && isBlockedFetchAddr(parsed) {
+		return errBlockedFetchAddress
+	}
 	return nil
+}
+
+type flightResult struct {
+	links []string
+	err   string
+}
+
+func evictExtraCacheLocked(now time.Time) {
+	for k, v := range extraCache.items {
+		if !now.Before(v.until) && !now.Before(v.negUntil) {
+			delete(extraCache.items, k)
+		}
+	}
+	for len(extraCache.items) >= extraCacheMaxEntries {
+		var oldestKey string
+		var oldestUntil time.Time
+		for k, v := range extraCache.items {
+			exp := v.until
+			if v.negUntil.After(exp) {
+				exp = v.negUntil
+			}
+			if oldestKey == "" || exp.Before(oldestUntil) {
+				oldestKey = k
+				oldestUntil = exp
+			}
+		}
+		if oldestKey == "" {
+			break
+		}
+		delete(extraCache.items, oldestKey)
+	}
 }
 
 func fetchRemoteShareLinks(raw string) ([]string, string) {
@@ -126,11 +281,46 @@ func fetchRemoteShareLinks(raw string) ([]string, string) {
 		return nil, err.Error()
 	}
 	key := u.String()
+	now := time.Now()
 	extraCache.mu.Lock()
-	if hit, ok := extraCache.items[key]; ok && time.Now().Before(hit.until) {
-		links := append([]string(nil), hit.links...)
-		extraCache.mu.Unlock()
-		return links, ""
+	if hit, ok := extraCache.items[key]; ok {
+		if now.Before(hit.until) {
+			links := append([]string(nil), hit.links...)
+			extraCache.mu.Unlock()
+			return links, ""
+		}
+		if now.Before(hit.negUntil) {
+			links := append([]string(nil), hit.links...)
+			errMsg := hit.lastErr
+			extraCache.mu.Unlock()
+			return links, errMsg
+		}
+	}
+	extraCache.mu.Unlock()
+
+	val, _, _ := extraFlight.Do(key, func() (any, error) {
+		links, errMsg := doFetchRemoteShareLinks(key)
+		return flightResult{links: links, err: errMsg}, nil
+	})
+	res, _ := val.(flightResult)
+	return append([]string(nil), res.links...), res.err
+}
+
+func doFetchRemoteShareLinks(key string) ([]string, string) {
+	now := time.Now()
+	extraCache.mu.Lock()
+	if hit, ok := extraCache.items[key]; ok {
+		if now.Before(hit.until) {
+			links := append([]string(nil), hit.links...)
+			extraCache.mu.Unlock()
+			return links, ""
+		}
+		if now.Before(hit.negUntil) {
+			links := append([]string(nil), hit.links...)
+			errMsg := hit.lastErr
+			extraCache.mu.Unlock()
+			return links, errMsg
+		}
 	}
 	extraCache.mu.Unlock()
 
@@ -162,18 +352,30 @@ func fetchRemoteShareLinks(raw string) ([]string, string) {
 		}
 	}
 	extraCache.mu.Lock()
-	extraCache.items[key] = extraCacheEntry{until: time.Now().Add(extraFetchCache), links: append([]string(nil), links...)}
+	evictExtraCacheLocked(time.Now())
+	extraCache.items[key] = extraCacheEntry{
+		until: time.Now().Add(extraFetchCache),
+		links: append([]string(nil), links...),
+	}
 	extraCache.mu.Unlock()
 	return links, ""
 }
 
 func cachedOrError(key, errMsg string) ([]string, string) {
+	now := time.Now()
 	extraCache.mu.Lock()
 	defer extraCache.mu.Unlock()
-	if hit, ok := extraCache.items[key]; ok {
-		return append([]string(nil), hit.links...), errMsg
+	evictExtraCacheLocked(now)
+	var staleLinks []string
+	if hit, ok := extraCache.items[key]; ok && len(hit.links) > 0 {
+		staleLinks = append([]string(nil), hit.links...)
 	}
-	return nil, errMsg
+	extraCache.items[key] = extraCacheEntry{
+		negUntil: now.Add(extraFetchNegCacheTTL),
+		lastErr:  errMsg,
+		links:    staleLinks,
+	}
+	return append([]string(nil), staleLinks...), errMsg
 }
 
 func applyRemarkToLink(link, remark string) string {

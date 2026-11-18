@@ -783,6 +783,63 @@ func TestClashTuicIncludesPassword(t *testing.T) {
 	}
 }
 
+func TestClashHTTPUpgradeAndVmessPlainTLS(t *testing.T) {
+	clash := RenderClash([]Node{{
+		Name:       "up",
+		Protocol:   "vless",
+		Host:       "up.example.com",
+		Port:       443,
+		UUID:       "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+		Type:       "httpupgrade",
+		Path:       "/upgrade",
+		HostHeader: "up.example.com",
+		Security:   "tls",
+		SNI:        "up.example.com",
+	}}, nil)
+	if !strings.Contains(clash, "network: ws") || strings.Contains(clash, "network: httpupgrade") || !strings.Contains(clash, "v2ray-http-upgrade: true") {
+		t.Fatalf("clash httpupgrade format mismatch:\n%s", clash)
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(RenderV2RayBase64([]Node{
+		{
+			Name:     "vm-plain",
+			Protocol: "vmess",
+			Host:     "vm.example.com",
+			Port:     80,
+			UUID:     "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+			Type:     "ws",
+			Path:     "/ws",
+			Security: "none",
+		},
+		{
+			Name:        "vm-grpc",
+			Protocol:    "vmess",
+			Host:        "vm.example.com",
+			Port:        443,
+			UUID:        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+			Type:        "grpc",
+			ServiceName: "gun-svc",
+			Security:    "tls",
+			ALPN:        "h2",
+		},
+	}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("vmess lines: %v", lines)
+	}
+	plainJSON, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(lines[0], "vmess://"))
+	if !strings.Contains(string(plainJSON), `"tls":""`) || strings.Contains(string(plainJSON), `"tls":"none"`) {
+		t.Fatalf("vmess plain tls should be empty string: %s", plainJSON)
+	}
+	grpcJSON, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(lines[1], "vmess://"))
+	if !strings.Contains(string(grpcJSON), `"path":"gun-svc"`) || !strings.Contains(string(grpcJSON), `"alpn":"h2"`) {
+		t.Fatalf("vmess grpc path/alpn missing: %s", grpcJSON)
+	}
+}
+
 func clashPassword(raw string) string {
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)

@@ -256,3 +256,51 @@ func TestIssueLocalTestCA(t *testing.T) {
 		t.Fatalf("issuer %s", got.Issuer)
 	}
 }
+
+func TestValidateDomainRejectsTraversalAndUnsafeNames(t *testing.T) {
+	valid := []string{
+		"abc.com",
+		"*.abc.com",
+		"sub-1.hk.abc.com.",
+		"_acme-challenge.abc.com",
+	}
+	for _, d := range valid {
+		if err := ValidateDomain(d); err != nil {
+			t.Fatalf("expected %q to be valid, got %v", d, err)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"../../evil",
+		"../../evil.com",
+		"abc.com/../../evil",
+		`abc.com\..\..\evil`,
+		"a..b.com",
+		"-abc.com",
+		"abc-.com",
+		"localhost",
+		"foo*bar.com",
+		"*.*.abc.com",
+		"abc .com",
+		"abc\x00.com",
+		strings.Repeat("a", 64) + ".com",
+		"127.0.0.1",
+		"1.2.3.4",
+		"[::1]",
+		"_acme-challenge.com",
+		"abc.123",
+		"abc.c",
+	}
+	for _, d := range invalid {
+		if err := ValidateDomain(d); err == nil {
+			t.Fatalf("expected %q to be rejected", d)
+		}
+		if names := IssueNames(d, true); names != nil {
+			t.Fatalf("expected IssueNames(%q) to return nil, got %v", d, names)
+		}
+		if key := FileKey(d); key != "cert" {
+			t.Fatalf("expected FileKey(%q) to sanitize to cert, got %q", d, key)
+		}
+	}
+}

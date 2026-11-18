@@ -121,3 +121,27 @@ func TestPanelRejectsSubscriptionWhenListenPortSet(t *testing.T) {
 		}
 	}
 }
+
+func TestIsReservedPathBlocksSystemPrefixes(t *testing.T) {
+	for _, reserved := range []string{
+		"/",
+		"/api",
+		"/api/v1",
+		"/admin",
+		"/system-assets",
+		"/assets",
+		"/themes",
+		"/.well-known",
+		"/oauth",
+		"/mcp",
+	} {
+		if !IsReservedPath(reserved) {
+			t.Fatalf("expected %q to be reserved", reserved)
+		}
+	}
+	for _, okPath := range []string{"/sub/", "/s3cret/", "/a1b2c3/"} {
+		if IsReservedPath(okPath) {
+			t.Fatalf("expected %q not to be reserved", okPath)
+		}
+	}
+}

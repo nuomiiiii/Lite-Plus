@@ -2,6 +2,7 @@ package subhttp
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nuomiiiii/lite/nodemgt/models"
@@ -44,7 +45,8 @@ func Generate(st *store.Store, row models.Subscription, req GenerateRequest) (su
 		return empty, err
 	}
 	extra := ExpandedExtras(st, row.UserID, row.ExtraURLs)
-	if req.Template == nil && (selection.Client == "v2ray" || selection.LegacyFormat != "") {
+	explicitLegacyFormat := strings.TrimSpace(req.Format) != ""
+	if req.Template == nil && (selection.Client == "v2ray" || explicitLegacyFormat) {
 		format := selection.LegacyFormat
 		if format == "" {
 			format = "xray"
@@ -58,6 +60,10 @@ func Generate(st *store.Store, row models.Subscription, req GenerateRequest) (su
 		if err != nil {
 			return empty, err
 		}
+	}
+	if tpl == nil && selection.LegacyFormat != "" {
+		body, ctype, err := sub.Render(selection.LegacyFormat, nodes, extra)
+		return subtpl.Document{Body: body, ContentType: ctype, Client: selection.Client, Warnings: []string{}}, err
 	}
 	kind := store.TemplateKindForClient(selection.Client)
 	if tpl == nil {

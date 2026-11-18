@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,10 +15,89 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nuomiiiii/lite/database/dbcore"
+	"github.com/nuomiiiii/lite/nodemgt/models"
 	"github.com/nuomiiiii/lite/nodemgt/store"
 	"github.com/nuomiiiii/lite/nodemgt/sub"
+	"github.com/nuomiiiii/lite/pkg/config"
 	"github.com/nuomiiiii/lite/utils/httpsserver"
+	"gorm.io/gorm"
 )
+
+const configCacheTTL = 3 * time.Second
+
+var reservedPathPrefixes = []string{
+	"/api",
+	"/admin",
+	"/system-assets",
+	"/assets",
+	"/themes",
+	"/.well-known",
+	"/oauth",
+	"/mcp",
+}
+
+type cachedConfigEntry struct {
+	db        *gorm.DB
+	cfg       Config
+	expiresAt time.Time
+}
+
+type cachedCertDomains struct {
+	certPath string
+	modTime  time.Time
+	size     int64
+	domains  []string
+	valid    bool
+}
+
+var (
+	cacheMu     sync.RWMutex
+	cfgCache    cachedConfigEntry
+	certCache   cachedCertDomains
+)
+
+func init() {
+	store.OnSubSettingChange = InvalidateCache
+	config.Subscribe(func(event config.ConfigEvent) {
+		for k := range event.New {
+			if strings.HasPrefix(strings.ToLower(k), "https_") {
+				InvalidateCache()
+				return
+			}
+		}
+		for k := range event.Old {
+			if strings.HasPrefix(strings.ToLower(k), "https_") {
+				InvalidateCache()
+				return
+			}
+		}
+	})
+}
+
+func InvalidateCache() {
+	cacheMu.Lock()
+	cfgCache = cachedConfigEntry{}
+	certCache = cachedCertDomains{}
+	cacheMu.Unlock()
+}
+
+func IsReservedPath(raw string) bool {
+	norm := strings.ToLower(NormalizePath(raw))
+	if norm == "/" {
+		return true
+	}
+	return hasReservedPrefix(norm)
+}
+
+func hasReservedPrefix(reqPath string) bool {
+	lower := strings.ToLower(reqPath)
+	for _, prefix := range reservedPathPrefixes {
+		if lower == prefix || strings.HasPrefix(lower, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
 
 type Config struct {
 	ListenPort int
@@ -72,14 +152,41 @@ func PanelCertificate() (certPath, keyPath string, domains []string) {
 	certPath = strings.TrimSpace(settings.CertificatePath)
 	keyPath = strings.TrimSpace(settings.PrivateKeyPath)
 	if certPath != "" {
-		if names, err := httpsserver.CertificateDomains(certPath); err == nil {
-			domains = names
-		}
+		domains = cachedCertificateDomains(certPath)
 	}
 	if domains == nil {
 		domains = []string{}
 	}
 	return certPath, keyPath, domains
+}
+
+func cachedCertificateDomains(certPath string) []string {
+	info, statErr := os.Stat(certPath)
+	if statErr == nil {
+		cacheMu.RLock()
+		if certCache.valid && certCache.certPath == certPath && certCache.modTime.Equal(info.ModTime()) && certCache.size == info.Size() {
+			out := append([]string(nil), certCache.domains...)
+			cacheMu.RUnlock()
+			return out
+		}
+		cacheMu.RUnlock()
+	}
+	names, err := httpsserver.CertificateDomains(certPath)
+	if err != nil {
+		return nil
+	}
+	if statErr == nil {
+		cacheMu.Lock()
+		certCache = cachedCertDomains{
+			certPath: certPath,
+			modTime:  info.ModTime(),
+			size:     info.Size(),
+			domains:  append([]string(nil), names...),
+			valid:    true,
+		}
+		cacheMu.Unlock()
+	}
+	return names
 }
 
 func applyPanelHTTPS(cfg *Config, reuse bool, certPath, keyPath string, domains []string) {
@@ -196,18 +303,63 @@ func publicSharePort(cfg Config) int {
 }
 
 func LoadConfig(st *store.Store) (Config, error) {
-	path, err := EnsurePath(st)
+	if st != nil && st.DB() != nil {
+		now := time.Now()
+		cacheMu.RLock()
+		if cfgCache.db == st.DB() && now.Before(cfgCache.expiresAt) {
+			cached := cfgCache.cfg
+			cacheMu.RUnlock()
+			return cached, nil
+		}
+		cacheMu.RUnlock()
+	}
+	cfg, err := loadConfigUncached(st)
 	if err != nil {
 		return Config{}, err
 	}
-	portRaw, _ := st.GetSetting("sub_listen_port")
-	port, _ := strconv.Atoi(strings.TrimSpace(portRaw))
-	publicRaw, _ := st.GetSetting("sub_public_port")
-	publicPort, _ := strconv.Atoi(strings.TrimSpace(publicRaw))
-	host, _ := st.GetSetting("sub_public_host")
-	reuseRaw, _ := st.GetSetting("sub_reuse_https")
-	legacyCert, _ := st.GetSetting("sub_cert_path")
-	legacyKey, _ := st.GetSetting("sub_key_path")
+	if st != nil && st.DB() != nil {
+		cacheMu.Lock()
+		cfgCache = cachedConfigEntry{
+			db:        st.DB(),
+			cfg:       cfg,
+			expiresAt: time.Now().Add(configCacheTTL),
+		}
+		cacheMu.Unlock()
+	}
+	return cfg, nil
+}
+
+func loadConfigUncached(st *store.Store) (Config, error) {
+	var rows []models.Setting
+	kv := map[string]string{}
+	if st != nil && st.DB() != nil {
+		_ = st.DB().Where("key IN ?", []string{
+			"sub_path",
+			"sub_listen_port",
+			"sub_public_port",
+			"sub_public_host",
+			"sub_reuse_https",
+			"sub_cert_path",
+			"sub_key_path",
+		}).Find(&rows).Error
+		for _, r := range rows {
+			kv[r.Key] = r.Value
+		}
+	}
+	path := NormalizePath(kv["sub_path"])
+	if path == "/" {
+		var err error
+		path, err = EnsurePath(st)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	port, _ := strconv.Atoi(strings.TrimSpace(kv["sub_listen_port"]))
+	publicPort, _ := strconv.Atoi(strings.TrimSpace(kv["sub_public_port"]))
+	host := kv["sub_public_host"]
+	reuseRaw := kv["sub_reuse_https"]
+	legacyCert := kv["sub_cert_path"]
+	legacyKey := kv["sub_key_path"]
 	reuse := settingOn(reuseRaw) || (strings.TrimSpace(legacyCert) != "" && strings.TrimSpace(legacyKey) != "")
 	panelCert, panelKey, panelDomains := PanelCertificate()
 	cfg := Config{
@@ -221,6 +373,7 @@ func LoadConfig(st *store.Store) (Config, error) {
 }
 
 func Reload() error {
+	InvalidateCache()
 	return Start()
 }
 
@@ -250,13 +403,13 @@ func dedicatedListen(cfg Config) bool {
 func Gate() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
-		if strings.HasPrefix(path, "/api") || strings.HasPrefix(path, "/admin") || strings.HasPrefix(path, "/system-assets") {
+		if hasReservedPrefix(path) {
 			c.Next()
 			return
 		}
 		st := store.New(dbcore.GetDBInstance())
 		cfg, err := LoadConfig(st)
-		if err != nil {
+		if err != nil || IsReservedPath(cfg.Path) {
 			c.Next()
 			return
 		}
@@ -265,6 +418,10 @@ func Gate() gin.HandlerFunc {
 }
 
 func servePanel(c *gin.Context, st *store.Store, cfg Config) {
+	if IsReservedPath(cfg.Path) {
+		c.Next()
+		return
+	}
 	token, ok := TokenFromPath(c.Request.URL.Path, cfg.Path)
 	if !ok {
 		c.Next()
@@ -279,6 +436,19 @@ func servePanel(c *gin.Context, st *store.Store, cfg Config) {
 	c.Abort()
 }
 
+func serveSub(c *gin.Context, st *store.Store, cfg Config) {
+	if IsReservedPath(cfg.Path) {
+		c.String(http.StatusNotFound, "not found")
+		return
+	}
+	token, ok := TokenFromPath(c.Request.URL.Path, cfg.Path)
+	if !ok {
+		c.String(http.StatusNotFound, "not found")
+		return
+	}
+	Write(c, st, token)
+}
+
 func Write(c *gin.Context, st *store.Store, token string) {
 	c.Header("Cache-Control", "no-store")
 	c.Header("Vary", "User-Agent")
@@ -290,7 +460,7 @@ func Write(c *gin.Context, st *store.Store, token string) {
 	}
 	doc, err := Generate(st, *row, GenerateRequest{Target: c.Query("target"), Format: c.Query("format"), UserAgent: c.Request.UserAgent()})
 	if err != nil {
-		c.String(http.StatusNotFound, "Subscription unavailable")
+		c.String(http.StatusNotFound, "not found")
 		return
 	}
 	publishName, publishUserinfo := MetadataPublishFlags(st)
@@ -341,6 +511,7 @@ func Start() error {
 }
 
 func Apply(cfg Config) error {
+	InvalidateCache()
 	if dedicatedListen(cfg) {
 		if err := cfg.ValidateTLS(); err != nil {
 			return err
@@ -363,12 +534,7 @@ func Apply(cfg Config) error {
 			c.String(http.StatusNotFound, "not found")
 			return
 		}
-		token, ok := TokenFromPath(c.Request.URL.Path, loaded.Path)
-		if !ok {
-			c.String(http.StatusNotFound, "not found")
-			return
-		}
-		Write(c, st, token)
+		serveSub(c, st, loaded)
 	})
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ListenPort),

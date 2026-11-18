@@ -42,6 +42,30 @@ func readMaybeCompressedBody(r *http.Request) ([]byte, error) {
 }
 
 func bindV2Params[T any](raw any, target *T) error {
+	if raw == nil {
+		return json.Unmarshal([]byte("null"), target)
+	}
+	switch v := raw.(type) {
+	case json.RawMessage:
+		if len(v) == 0 {
+			return json.Unmarshal([]byte("null"), target)
+		}
+		return json.Unmarshal(v, target)
+	case []byte:
+		if len(v) == 0 {
+			return json.Unmarshal([]byte("null"), target)
+		}
+		return json.Unmarshal(v, target)
+	case T:
+		*target = v
+		return nil
+	case *T:
+		if v == nil {
+			return json.Unmarshal([]byte("null"), target)
+		}
+		*target = *v
+		return nil
+	}
 	b, err := json.Marshal(raw)
 	if err != nil {
 		return err
@@ -50,6 +74,10 @@ func bindV2Params[T any](raw any, target *T) error {
 }
 
 func handleV2RPC(uuid string, req v2.Request, allowWait bool) v2.Response {
+	return handleV2RPCWithPresence(uuid, req, allowWait, true)
+}
+
+func handleV2RPCWithPresence(uuid string, req v2.Request, allowWait, markPresence bool) v2.Response {
 	if req.JSONRPC != v2.Version {
 		return v2.Error(req.ID, -32600, "invalid jsonrpc version", nil)
 	}
@@ -59,7 +87,7 @@ func handleV2RPC(uuid string, req v2.Request, allowWait bool) v2.Response {
 		if err := bindV2Params(req.Params, &params); err != nil {
 			return v2.Error(req.ID, -32602, "invalid report params", err.Error())
 		}
-		if err := ingestReport(uuid, params.Report, true); err != nil {
+		if err := ingestReport(uuid, params.Report, markPresence); err != nil {
 			return v2.Error(req.ID, -32000, "failed to save report", err.Error())
 		}
 		return v2.Success(req.ID, gin.H{
@@ -241,7 +269,7 @@ func UploadV2RPC(c *gin.Context) {
 		return
 	}
 	var req v2.Request
-	if err := json.Unmarshal(bytesBody, &req); err != nil {
+	if err := v2.DecodeRequest(bytesBody, &req); err != nil {
 		c.JSON(http.StatusBadRequest, v2.Error(nil, -32700, "parse error", err.Error()))
 		return
 	}
@@ -250,7 +278,7 @@ func UploadV2RPC(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, v2.Error(req.ID, -32001, "invalid token", nil))
 		return
 	}
-	resp := handleV2RPC(uuid, req, true)
+	resp := handleV2RPCWithPresence(uuid, req, true, true)
 	status := http.StatusOK
 	if resp.Error != nil {
 		status = http.StatusBadRequest
@@ -303,11 +331,11 @@ func WebSocketV2RPC(c *gin.Context) {
 		}
 		message = bytes.TrimSpace(message)
 		var req v2.Request
-		if err := json.Unmarshal(message, &req); err != nil {
+		if err := v2.DecodeRequest(message, &req); err != nil {
 			conn.WriteJSON(v2.Error(nil, -32700, "parse error", err.Error()))
 			continue
 		}
-		resp := handleV2RPC(uuid, req, false)
+		resp := handleV2RPCWithPresence(uuid, req, false, false)
 		if req.ID != nil {
 			if err := conn.WriteJSON(resp); err != nil {
 				logger.Errorf("client-api", "failed to write v2 rpc response: %v", err)

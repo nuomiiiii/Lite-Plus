@@ -140,15 +140,21 @@ func TestSubscriptionDeniesDisabledExpiredAndRevokedAccess(t *testing.T) {
 	row.Enabled = true
 	require.NoError(t, st.UpsertSubscription(&row))
 	require.NoError(t, st.SetUserStatus(row.UserID, models.UserDisabled))
-	require.Equal(t, 404, publicSubscription(st, row.Token, "?target=mihomo", "").Code)
+	disabledResp := publicSubscription(st, row.Token, "?target=mihomo", "")
+	require.Equal(t, 404, disabledResp.Code)
+	require.Equal(t, "not found", disabledResp.Body.String())
 	require.NoError(t, st.SetUserStatus(row.UserID, models.UserActive))
 	past := time.Now().Add(-time.Minute)
 	require.NoError(t, st.DB().Model(&models.NodeUser{}).Where("id = ?", row.UserID).Update("expires_at", past).Error)
-	require.Equal(t, 404, publicSubscription(st, row.Token, "?target=sing-box", "").Code)
+	expiredResp := publicSubscription(st, row.Token, "?target=sing-box", "")
+	require.Equal(t, 404, expiredResp.Code)
+	require.Equal(t, "not found", expiredResp.Body.String())
 	loaded, err := st.GetUser(row.UserID)
 	require.NoError(t, err)
 	require.Equal(t, models.UserExpired, loaded.Status)
-	require.Equal(t, 404, publicSubscription(st, "invalid-token", "?target=loon", "").Code)
+	invalidResp := publicSubscription(st, "invalid-token", "?target=loon", "")
+	require.Equal(t, 404, invalidResp.Code)
+	require.Equal(t, "not found", invalidResp.Body.String())
 }
 
 func TestTemplateBindingPrecedenceAndUpdates(t *testing.T) {
@@ -218,6 +224,26 @@ func TestLegacyClashFormatKeepsNodeListWhenATemplateIsBound(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, tpl.ID, targeted.TemplateID)
 	require.NotEqual(t, want, targeted.Body)
+
+	// Saved subscription Format="clash" or "sing-box" must apply custom bound templates when no explicit ?format= override is given.
+	row.Format = "clash"
+	require.NoError(t, st.UpsertSubscription(&row))
+	savedClash, err := Generate(st, row, GenerateRequest{})
+	require.NoError(t, err)
+	require.Equal(t, tpl.ID, savedClash.TemplateID)
+
+	singTpl := subtpl.DefaultTemplate("sing-box")
+	singTpl.ID = ""
+	singTpl.Name = "custom-sing"
+	require.NoError(t, st.UpsertSubscriptionTemplate(&singTpl))
+	require.NoError(t, st.SetSubscriptionTemplateBinding(&models.SubscriptionTemplateBinding{
+		Scope: "global", Client: "sing-box", TemplateID: singTpl.ID,
+	}))
+	row.Format = "sing-box"
+	require.NoError(t, st.UpsertSubscription(&row))
+	savedSing, err := Generate(st, row, GenerateRequest{})
+	require.NoError(t, err)
+	require.Equal(t, singTpl.ID, savedSing.TemplateID)
 }
 
 func TestAutomaticShareHostUsesTheSameStoreAsGrants(t *testing.T) {

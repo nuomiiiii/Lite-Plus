@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nuomiiiii/lite/nodemgt/control"
 	"github.com/nuomiiiii/lite/nodemgt/models"
 	"github.com/nuomiiiii/lite/nodemgt/store"
 	"gorm.io/gorm"
@@ -78,7 +79,6 @@ func (s *Service) Assign(actor, userID, planID, operationID string, now time.Tim
 		if err := inner.AddLedger(user.ID, "assign", operationID+"-grant", plan.TrafficBytes); err != nil && !errors.Is(err, store.ErrConflict) {
 			return err
 		}
-		_ = inner.Audit(actor, "nodemgt.assign", user.ID, plan.ID)
 		return nil
 	})
 	if err != nil {
@@ -148,7 +148,6 @@ func (s *Service) ApplyPlanToAssignees(actor, planID, operationID string, now ti
 			if err := inner.SaveAssignment(&next); err != nil {
 				return err
 			}
-			_ = inner.Audit(actor, "nodemgt.plan.apply", user.ID, plan.ID)
 			return enqueueUserSync(inner, user.ID, "applyConfig", op)
 		})
 		if err != nil {
@@ -179,7 +178,6 @@ func (s *Service) Unassign(actor, userID, operationID string) error {
 		}).Error; err != nil {
 			return err
 		}
-		_ = inner.Audit(actor, "nodemgt.unassign", userID, "")
 		return nil
 	})
 	if err != nil {
@@ -265,7 +263,6 @@ func (s *Service) Renew(actor, userID, operationID string, now time.Time) (*mode
 		if err := inner.SaveAssignment(asg); err != nil {
 			return err
 		}
-		_ = inner.Audit(actor, "nodemgt.renew", user.ID, plan.ID)
 		return enqueueUserSync(inner, user.ID, "applyConfig", operationID)
 	})
 	if err != nil {
@@ -290,7 +287,6 @@ func (s *Service) Topup(actor, userID, operationID string, extraBytes int64) err
 			UpdateColumn("quota_bytes", gorm.Expr("quota_bytes + ?", extraBytes)).Error; err != nil {
 			return err
 		}
-		_ = inner.Audit(actor, "nodemgt.topup", userID, fmt.Sprintf("%d", extraBytes))
 		return enqueueUserSync(inner, userID, "syncQuota", operationID)
 	})
 }
@@ -318,7 +314,6 @@ func (s *Service) Modify(actor, userID, operationID string, quota *int64, rate *
 	if err := s.Store.UpsertUser(user); err != nil {
 		return err
 	}
-	_ = s.Store.Audit(actor, "nodemgt.modify", user.ID, ensureOpID(operationID))
 	return enqueueUserSync(s.Store, user.ID, "applyConfig", ensureOpID(operationID))
 }
 
@@ -359,37 +354,112 @@ func (s *Service) RecordUsageFromNode(nodeUUID, userID string, bytes int64, batc
 	if strings.TrimSpace(batchID) == "" {
 		batchID = uuid.NewString()
 	}
-	return s.Store.DB().Transaction(func(tx *gorm.DB) error {
+	var pushTargets []string
+	err := s.Store.DB().Transaction(func(tx *gorm.DB) error {
 		inner := store.New(tx)
-		ledgerOp := batchID
-		if strings.TrimSpace(userID) != "" {
-			ledgerOp = userID + ":" + batchID
-		}
-		seen, err := inner.UsageBatchSeen(userID, ledgerOp)
+		before, err := inner.GetUser(userID)
 		if err != nil {
 			return err
 		}
-		if seen {
+		prevUsed := before.UsedBytes
+
+		legacyOp := batchID
+		if strings.TrimSpace(userID) != "" {
+			legacyOp = userID + ":" + batchID
+		}
+		if strings.TrimSpace(nodeUUID) == "" {
+			seen, err := inner.UsageBatchSeen(userID, legacyOp)
+			if err != nil {
+				return err
+			}
+			if seen {
+				return nil
+			}
+		}
+
+		dedupOp := store.UsageDedupOpID(nodeUUID, batchID, userID)
+		if strings.TrimSpace(nodeUUID) != "" && before.LastUsageOp == dedupOp {
 			return nil
 		}
-		reset, err := inner.ApplyUserTrafficReset(userID, time.Now().UTC())
-		if err != nil {
-			return err
-		}
-		if err := inner.ApplyUsageBatch(userID, ledgerOp, bytes); errors.Is(err, store.ErrConflict) {
+		if err := inner.AddLedger(userID, "usage_dedup", dedupOp, bytes); errors.Is(err, store.ErrConflict) {
 			return nil
 		} else if err != nil {
 			return err
 		}
-		if !reset {
-			return nil
-		}
-		user, err := inner.GetUser(userID)
+
+		reset, err := inner.ApplyUserTrafficReset(userID, time.Now().UTC())
 		if err != nil {
 			return err
 		}
-		return enqueueUserSync(inner, userID, "syncQuota", trafficResetOpID(userID, user.TrafficResetCycle))
+		if reset {
+			prevUsed = 0
+		}
+
+		lastOp := legacyOp
+		if strings.TrimSpace(nodeUUID) != "" {
+			lastOp = dedupOp
+		}
+		res := tx.Model(&models.NodeUser{}).Where("id = ?", userID).Updates(map[string]any{
+			"used_bytes":    gorm.Expr("used_bytes + ?", bytes),
+			"last_usage_op": lastOp,
+			"updated_at":    time.Now().UTC(),
+		})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return store.ErrNotFound
+		}
+
+		updated, err := inner.GetUser(userID)
+		if err != nil {
+			return err
+		}
+
+		if reset {
+			if err := enqueueUserSync(inner, userID, "syncQuota", trafficResetOpID(userID, updated.TrafficResetCycle)); err != nil {
+				return err
+			}
+			nodes, _ := inner.NodeUUIDsForUser(userID)
+			pushTargets = append(pushTargets, nodes...)
+			return nil
+		}
+
+		if updated.QuotaBytes > 0 {
+			exhausted := updated.UsedBytes >= updated.QuotaBytes
+			crossedDecile := (prevUsed*10)/updated.QuotaBytes < (updated.UsedBytes*10)/updated.QuotaBytes
+			if exhausted || crossedDecile {
+				nodes, err := inner.NodeUUIDsForUser(userID)
+				if err != nil {
+					return err
+				}
+				var otherNodes []string
+				for _, n := range nodes {
+					n = strings.TrimSpace(n)
+					if n == "" || n == strings.TrimSpace(nodeUUID) {
+						continue
+					}
+					otherNodes = append(otherNodes, n)
+				}
+				if len(otherNodes) > 0 {
+					for _, targetNode := range otherNodes {
+						if err := control.EnqueueSyncQuota(inner, targetNode, ""); err != nil {
+							return err
+						}
+					}
+					pushTargets = append(pushTargets, otherNodes...)
+				}
+			}
+		}
+		return nil
 	})
+	if err != nil {
+		return err
+	}
+	for _, targetNode := range pushTargets {
+		_ = control.PushPending(s.Store, targetNode)
+	}
+	return nil
 }
 
 func (s *Service) SyncDueTrafficResets(at time.Time) ([]string, error) {

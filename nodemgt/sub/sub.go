@@ -13,6 +13,7 @@ import (
 	"github.com/nuomiiiii/lite/nodemgt/cert"
 	"github.com/nuomiiiii/lite/nodemgt/inboundcfg"
 	"github.com/nuomiiiii/lite/nodemgt/models"
+	"github.com/nuomiiiii/lite/nodemgt/secretcrypt"
 )
 
 // Independent Lite-Plus subscription renderer. Does not copy Clash / v2rayN / sing-box converters.
@@ -222,7 +223,11 @@ func assembleWithAddrs(user models.NodeUser, inbounds []models.Inbound, creds []
 				cipher = inboundcfg.DefaultSSMethod()
 			}
 			if inboundcfg.IsSS2022(cipher) {
-				sharePass = inboundcfg.SS2022SharePassword(cfg.SSPassword, password, in.ID, cipher)
+				ssPass := cfg.SSPassword
+				if opened, err := secretcrypt.Open(ssPass); err == nil {
+					ssPass = opened
+				}
+				sharePass = inboundcfg.SS2022SharePassword(ssPass, password, in.ID, cipher)
 			}
 		}
 		nodes = append(nodes, Node{
@@ -430,7 +435,11 @@ func clashProxy(n Node) string {
 		}
 	}
 	if n.Type != "" && n.Type != "tcp" {
-		fmt.Fprintf(&b, "    network: %s\n", n.Type)
+		netName := n.Type
+		if netName == "httpupgrade" {
+			netName = "ws"
+		}
+		fmt.Fprintf(&b, "    network: %s\n", netName)
 	}
 	useTLS := n.Security == "tls" || n.Security == "reality"
 	if useTLS {
@@ -465,7 +474,15 @@ func clashProxy(n Node) string {
 		}
 		b.WriteString("    grpc-opts:\n")
 		fmt.Fprintf(&b, "      grpc-service-name: %s\n", svc)
-	case "httpupgrade", "xhttp":
+	case "httpupgrade":
+		b.WriteString("    ws-opts:\n")
+		fmt.Fprintf(&b, "      path: %s\n", orDefault(n.Path, "/"))
+		if n.HostHeader != "" {
+			b.WriteString("      headers:\n")
+			fmt.Fprintf(&b, "        Host: %s\n", n.HostHeader)
+		}
+		b.WriteString("      v2ray-http-upgrade: true\n")
+	case "xhttp":
 		b.WriteString("    ws-opts:\n")
 		fmt.Fprintf(&b, "      path: %s\n", orDefault(n.Path, "/"))
 		if n.HostHeader != "" {
@@ -664,6 +681,14 @@ func RenderV2RayBase64(nodes []Node, extra []string) string {
 			scheme = "ss"
 		}
 		if scheme == "vmess" {
+			tlsVal := n.Security
+			if strings.EqualFold(tlsVal, "none") {
+				tlsVal = ""
+			}
+			vmessPath := n.Path
+			if strings.EqualFold(n.Type, "grpc") && vmessPath == "" {
+				vmessPath = n.ServiceName
+			}
 			obj := map[string]any{
 				"v":    "2",
 				"ps":   n.Name,
@@ -674,10 +699,13 @@ func RenderV2RayBase64(nodes []Node, extra []string) string {
 				"net":  n.Type,
 				"type": "none",
 				"host": n.HostHeader,
-				"path": n.Path,
-				"tls":  n.Security,
+				"path": vmessPath,
+				"tls":  tlsVal,
 				"sni":  n.SNI,
 				"fp":   n.Fingerprint,
+			}
+			if n.ALPN != "" {
+				obj["alpn"] = n.ALPN
 			}
 			raw, _ := json.Marshal(obj)
 			lines = append(lines, "vmess://"+base64.StdEncoding.EncodeToString(raw))

@@ -31,3 +31,14 @@ func TestWriteRootFilesRequiresIssuedMaterial(t *testing.T) {
 		t.Fatal("empty chain must fail")
 	}
 }
+
+func TestWriteRootFilesRejectsTraversalDomains(t *testing.T) {
+	t.Chdir(t.TempDir())
+	chain := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+	key := "-----BEGIN PRIVATE KEY-----\nMIIK\n-----END PRIVATE KEY-----"
+	for _, bad := range []string{"../../evil", "../../evil.com", `..\evil.com`, "a/b.com", ".", ".."} {
+		if _, _, err := WriteRootFiles(bad, chain, key); err == nil {
+			t.Fatalf("expected WriteRootFiles(%q) to fail", bad)
+		}
+	}
+}
