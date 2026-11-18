@@ -30,6 +30,10 @@ if ! grep -q 'LEGACY_SERVICE_NAME="lite"' "$INSTALLER_PATH"; then
     echo "FAIL: install-lite.sh does not migrate from lite.service" >&2
     exit 1
 fi
+if ! grep -q 'ensure_utf8_locale' "$INSTALLER_PATH" || ! grep -q 'C.UTF-8' "$INSTALLER_PATH"; then
+    echo "FAIL: install-lite.sh does not force a UTF-8 locale for whiptail" >&2
+    exit 1
+fi
 if [ "$(grep -c 'GODEBUG=disablethp=1' "$INSTALLER_PATH")" -lt 2 ]; then
     echo "FAIL: install-lite.sh does not disable transparent huge pages for systemd and procd" >&2
     exit 1

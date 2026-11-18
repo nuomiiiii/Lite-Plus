@@ -37,13 +37,33 @@ CHANNEL="stable"
 TUI_TOOL=""
 SERVICE_MANAGER=""
 
+charset_is_utf8() {
+    case "$(locale charmap 2>/dev/null || true)" in
+        UTF-8|utf-8|UTF8|utf8) return 0 ;;
+    esac
+    return 1
+}
+
+# Debian 12 cloud images and `sudo` env_reset often leave LANG=C.
+# whiptail/newt then treats UTF-8 Chinese as Latin-1 and the menu garbles.
+ensure_utf8_locale() {
+    if charset_is_utf8; then
+        return 0
+    fi
+    # glibc 2.35+ (Debian 12) always has C.UTF-8, even without generated locales.
+    export LANG=C.UTF-8
+    export LC_ALL=C.UTF-8
+}
+
 detect_tui() {
+    TUI_TOOL=""
+    if ! charset_is_utf8; then
+        return 0
+    fi
     if command -v whiptail >/dev/null 2>&1; then
         TUI_TOOL="whiptail"
     elif command -v dialog >/dev/null 2>&1; then
         TUI_TOOL="dialog"
-    else
-        TUI_TOOL=""
     fi
 }
 
@@ -1092,6 +1112,7 @@ main_menu() {
 
 if [ "${LITE_INSTALLER_LIBRARY_ONLY:-0}" != "1" ]; then
     check_root
+    ensure_utf8_locale
     detect_tui
     SERVICE_MANAGER=$(detect_service_manager)
     main_menu
