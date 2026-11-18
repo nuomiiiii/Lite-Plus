@@ -48,7 +48,11 @@ class PlusFollowTests(unittest.TestCase):
         self.assertIn("cmd/app.go", server)
 
     def test_theme_git_ref(self) -> None:
-        self.assertEqual(plus_follow.theme_git_ref(""), "v1.3.0")
+        baseline = json.loads(
+            (pathlib.Path(__file__).resolve().parent.parent / "plus-baseline.json").read_text(encoding="utf-8")
+        )
+        pinned = str(baseline.get("lite_theme") or "").strip()
+        self.assertEqual(plus_follow.theme_git_ref(""), plus_follow.theme_git_ref(pinned))
         self.assertEqual(plus_follow.theme_git_ref("1.3.0"), "v1.3.0")
         self.assertEqual(plus_follow.theme_git_ref("v1.3.0"), "v1.3.0")
         self.assertEqual(plus_follow.theme_git_ref("main"), "main")
