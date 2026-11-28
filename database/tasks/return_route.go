@@ -988,7 +988,7 @@ func SaveReturnRouteResult(client string, result v2.RouteResultParams) error {
 				return err
 			}
 		}
-		return tx.Where("occurred_at < ?", now.Add(-returnRouteEventRetention)).Delete(&models.ReturnRouteEvent{}).Error
+		return nil
 	})
 	if err != nil {
 		return err
@@ -1006,6 +1006,14 @@ func SaveReturnRouteResult(client string, result v2.RouteResultParams) error {
 		}
 	}
 	return nil
+}
+
+// CleanupReturnRouteEvents removes expired return-route switch/recovery events.
+// Called by the scheduled cleanup job instead of inside every probe write transaction.
+func CleanupReturnRouteEvents() error {
+	return dbcore.GetDBInstance().
+		Where("occurred_at < ?", time.Now().UTC().Add(-returnRouteEventRetention)).
+		Delete(&models.ReturnRouteEvent{}).Error
 }
 
 func shouldSendReturnRouteEventNotification(task models.ReturnRouteTask, event models.ReturnRouteEvent) bool {

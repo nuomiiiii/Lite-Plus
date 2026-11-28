@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"math/rand/v2"
 	"time"
 
 	"github.com/nuomiiiii/lite/database/dbcore"
@@ -10,10 +11,24 @@ import (
 
 const (
 	taskWriteChunkSize     = 400
-	saveTaskResultAttempts = 3
+	saveTaskResultAttempts = 8
 )
 
-var saveTaskResultsAttemptHook func(attempt int) error
+var (
+	saveTaskResultsAttemptHook func(attempt int) error
+	saveTaskResultRetrySleep   = defaultSaveTaskResultRetrySleep
+)
+
+func defaultSaveTaskResultRetrySleep(attempt int) {
+	delay := time.Duration(25<<(attempt-1)) * time.Millisecond
+	if delay > 500*time.Millisecond {
+		delay = 500 * time.Millisecond
+	}
+	if jitterRange := int64(delay / 2); jitterRange > 0 {
+		delay += time.Duration(rand.Int64N(jitterRange))
+	}
+	time.Sleep(delay)
+}
 
 func CreateTask(taskId string, clients []string, command string) error {
 	db := dbcore.GetDBInstance()
@@ -91,7 +106,18 @@ func GetAllTasks() ([]models.Task, error) {
 
 func GetTaskResultsByTaskId(taskId string) ([]models.TaskResult, error) {
 	var results []models.TaskResult
-	if err := dbcore.GetDBInstance().Where("task_id = ?", taskId).Find(&results).Error; err != nil {
+	if err := dbcore.GetReadDBInstance().Where("task_id = ?", taskId).Find(&results).Error; err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+func GetTaskResultsByTaskIdAndClients(taskId string, clientIDs []string) ([]models.TaskResult, error) {
+	if len(clientIDs) == 0 {
+		return GetTaskResultsByTaskId(taskId)
+	}
+	var results []models.TaskResult
+	if err := dbcore.GetReadDBInstance().Where("task_id = ? AND client IN ?", taskId, clientIDs).Find(&results).Error; err != nil {
 		return nil, err
 	}
 	return results, nil
@@ -126,6 +152,9 @@ func SaveIncomingTaskResult(taskId, clientId, result, status string, exitCode in
 		if saveTaskResultsAttemptHook != nil {
 			if err := saveTaskResultsAttemptHook(attempt); err != nil {
 				last = err
+				if attempt < saveTaskResultAttempts && saveTaskResultRetrySleep != nil {
+					saveTaskResultRetrySleep(attempt)
+				}
 				continue
 			}
 		}
@@ -136,6 +165,9 @@ func SaveIncomingTaskResult(taskId, clientId, result, status string, exitCode in
 		op := query.Updates(updates)
 		if op.Error != nil {
 			last = op.Error
+			if attempt < saveTaskResultAttempts && saveTaskResultRetrySleep != nil {
+				saveTaskResultRetrySleep(attempt)
+			}
 			continue
 		}
 		if op.RowsAffected > 0 {
@@ -144,6 +176,9 @@ func SaveIncomingTaskResult(taskId, clientId, result, status string, exitCode in
 		var count int64
 		if err := db.Model(&models.TaskResult{}).Where("task_id = ? AND client = ?", taskId, clientId).Count(&count).Error; err != nil {
 			last = err
+			if attempt < saveTaskResultAttempts && saveTaskResultRetrySleep != nil {
+				saveTaskResultRetrySleep(attempt)
+			}
 			continue
 		}
 		if count == 0 {
@@ -193,12 +228,18 @@ func SaveTaskResults(taskId string, clientIDs []string, result string, exitCode 
 		if saveTaskResultsAttemptHook != nil {
 			if err := saveTaskResultsAttemptHook(attempt); err != nil {
 				last = err
+				if attempt < saveTaskResultAttempts && saveTaskResultRetrySleep != nil {
+					saveTaskResultRetrySleep(attempt)
+				}
 				continue
 			}
 		}
 		last = saveTaskResultsOnce(db, taskId, unique, updates)
 		if last == nil {
 			return nil
+		}
+		if attempt < saveTaskResultAttempts && saveTaskResultRetrySleep != nil {
+			saveTaskResultRetrySleep(attempt)
 		}
 	}
 	return last

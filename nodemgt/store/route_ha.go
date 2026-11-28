@@ -123,6 +123,32 @@ func (s *Store) routeOutboundOK(nodeUUID, id string) error {
 	if strings.TrimSpace(row.NodeUUID) != strings.TrimSpace(nodeUUID) {
 		return fmt.Errorf("%w: outbound required", ErrInvalid)
 	}
+	if !row.Enabled {
+		return fmt.Errorf("%w: outbound disabled", ErrInvalid)
+	}
+	return nil
+}
+
+func (s *Store) outboundUsedByEnabledHA(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" || id == "direct" || id == "block" {
+		return nil
+	}
+	var routes []models.Route
+	if err := s.db.Where("enabled = ?", true).Find(&routes).Error; err != nil {
+		return err
+	}
+	for _, row := range routes {
+		if settingsFlag(row.RuleJSON, "chain_managed") {
+			continue
+		}
+		if normalizeRouteStrategy(ruleString(routeRuleMap(row.RuleJSON), "strategy")) != chainStrategyFailover {
+			continue
+		}
+		if settingsString(row.RuleJSON, "primary_outbound_id") == id || settingsString(row.RuleJSON, "backup_outbound_id") == id {
+			return fmt.Errorf("%w: outbound in use", ErrConflict)
+		}
+	}
 	return nil
 }
 

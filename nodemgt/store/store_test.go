@@ -757,6 +757,52 @@ func TestControlCommandIdempotent(t *testing.T) {
 	require.Len(t, pending, 0)
 }
 
+func TestEnqueueApplyConfigSupersedesPendingQuota(t *testing.T) {
+	st := testDB(t)
+	quota := &models.ControlCommand{OperationID: "op-quota", NodeUUID: "n1", Kind: "syncQuota", PayloadJSON: `{"routes":"old"}`, Status: models.CmdPending}
+	require.NoError(t, st.EnqueueCommand(quota))
+	apply := &models.ControlCommand{OperationID: "op-apply", NodeUUID: "n1", Kind: "applyConfig", PayloadJSON: `{"routes":"new"}`}
+	require.NoError(t, st.EnqueueCommand(apply))
+	got, err := st.GetCommand("op-quota")
+	require.NoError(t, err)
+	require.Equal(t, models.CmdSuperseded, got.Status)
+	require.Empty(t, got.PayloadJSON)
+	pending, err := st.PendingCommands("n1")
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	require.Equal(t, "op-apply", pending[0].OperationID)
+}
+
+func TestEnqueueApplyInsertFailureKeepsPendingQuota(t *testing.T) {
+	st := testDB(t)
+	quota := &models.ControlCommand{OperationID: "op-quota-keep", NodeUUID: "n1", Kind: "syncQuota", PayloadJSON: `{"users":[]}`}
+	require.NoError(t, st.EnqueueCommand(quota))
+	require.NoError(t, st.DB().Exec(`CREATE TRIGGER fail_apply_insert BEFORE INSERT ON nodemgt_control_commands WHEN NEW.kind = 'applyConfig' BEGIN SELECT RAISE(ABORT, 'simulated apply queue insert failure'); END`).Error)
+	apply := &models.ControlCommand{OperationID: "op-apply-fail", NodeUUID: "n1", Kind: "applyConfig", PayloadJSON: `{"users":[]}`}
+	require.ErrorContains(t, st.EnqueueCommand(apply), "simulated apply queue insert failure")
+	_, err := st.GetCommand("op-apply-fail")
+	require.ErrorIs(t, err, ErrNotFound)
+	stored, err := st.GetCommand(quota.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, models.CmdPending, stored.Status)
+	require.NotEmpty(t, stored.PayloadJSON)
+}
+
+func TestEnqueueApplyUpdateFailureKeepsPendingQuota(t *testing.T) {
+	st := testDB(t)
+	quota := &models.ControlCommand{OperationID: "op-quota-update", NodeUUID: "n1", Kind: "syncQuota", PayloadJSON: `{"users":[]}`}
+	require.NoError(t, st.EnqueueCommand(quota))
+	require.NoError(t, st.DB().Exec(`CREATE TRIGGER fail_apply_update BEFORE UPDATE ON nodemgt_control_commands WHEN NEW.status = 'superseded' BEGIN SELECT RAISE(ABORT, 'simulated apply queue update failure'); END`).Error)
+	apply := &models.ControlCommand{OperationID: "op-apply-update-fail", NodeUUID: "n1", Kind: "applyConfig", PayloadJSON: `{"users":[]}`}
+	require.ErrorContains(t, st.EnqueueCommand(apply), "simulated apply queue update failure")
+	_, err := st.GetCommand("op-apply-update-fail")
+	require.ErrorIs(t, err, ErrNotFound)
+	stored, err := st.GetCommand(quota.OperationID)
+	require.NoError(t, err)
+	require.Equal(t, models.CmdPending, stored.Status)
+	require.NotEmpty(t, stored.PayloadJSON)
+}
+
 func TestMarkCommandSentAndLatest(t *testing.T) {
 	st := testDB(t)
 	first := &models.ControlCommand{OperationID: "op-a", NodeUUID: "n1", Kind: "applyConfig", PayloadJSON: "{}"}

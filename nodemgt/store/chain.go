@@ -218,8 +218,26 @@ func (s *Store) UpsertChain(in ChainUpsert) (*ChainView, []string, error) {
 	if err := s.chainGraphOK(strings.TrimSpace(in.ID), landings, sources); err != nil {
 		return nil, nil, err
 	}
+	chainEnabled := true
+	if in.Enabled != nil {
+		chainEnabled = *in.Enabled
+	} else if existing != nil {
+		chainEnabled = existing.Enabled
+	}
 	for _, id := range sources {
 		if err := s.inboundHasManualForwarding(id); err != nil {
+			return nil, nil, err
+		}
+		if !chainEnabled {
+			continue
+		}
+		fallbackPriority := 0
+		if managed, err := s.managedRouteForSource(id); err == nil {
+			fallbackPriority = managed.Priority
+		} else if err != nil && !isNotFound(err) {
+			return nil, nil, err
+		}
+		if err := s.validateSourceUserOverridesAheadOf(id, fallbackPriority); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -459,6 +477,9 @@ func (s *Store) inboundHasManualForwarding(id string) error {
 	}
 	for _, row := range routes {
 		if settingsFlag(row.RuleJSON, "chain_managed") {
+			continue
+		}
+		if routeHasUserConstraint(row.RuleJSON) {
 			continue
 		}
 		if routeRuleInboundID(row.RuleJSON) == id {

@@ -137,11 +137,14 @@ func TestIssueRootAndDeployToNode(t *testing.T) {
 
 func TestEnqueueApplyConfig(t *testing.T) {
 	st := testStore(t)
-	require.NoError(t, EnqueueApplyConfig(st, "n1"))
+	opID, err := EnqueueApplyConfigOp(st, "n1")
+	require.NoError(t, err)
+	require.NotEmpty(t, opID)
 	pending, err := st.PendingCommands("n1")
 	require.NoError(t, err)
 	require.Len(t, pending, 1)
 	require.Equal(t, "applyConfig", pending[0].Kind)
+	require.Equal(t, opID, pending[0].OperationID)
 	require.NoError(t, EnqueueApplyConfig(st, ""))
 	pending, err = st.PendingCommands("n1")
 	require.NoError(t, err)

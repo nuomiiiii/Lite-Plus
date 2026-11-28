@@ -499,6 +499,9 @@ func (s *Store) UpsertInbound(row *models.Inbound) error {
 	if strings.TrimSpace(row.Listen) == "" {
 		row.Listen = inboundcfg.ListenForStack(inboundcfg.Parse(row.SettingsJSON).Stack, "")
 	}
+	if err := s.validateUserRoutesAgainstInbound(row); err != nil {
+		return err
+	}
 	row.UpdatedAt = now()
 	if row.CreatedAt.IsZero() {
 		row.CreatedAt = row.UpdatedAt
@@ -575,6 +578,15 @@ func (s *Store) UpsertOutbound(row *models.Outbound) error {
 	}
 	if reservedOutboundTag(row.Name) {
 		return fmt.Errorf("%w: outbound_tag_reserved", ErrInvalid)
+	}
+	if !row.Enabled && strings.TrimSpace(row.ID) != "" {
+		if existing, err := s.GetOutbound(row.ID); err == nil && existing.Enabled {
+			if err := s.outboundUsedByEnabledHA(row.ID); err != nil {
+				return err
+			}
+		} else if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
 	}
 	if !settingsFlag(row.SettingsJSON, "chain_managed") && !settingsFlag(row.SettingsJSON, "route_managed") {
 		for _, key := range []string{"source_inbound_id", "landing_inbound_id"} {
@@ -676,8 +688,11 @@ func (s *Store) ListRoutes(nodeUUID string) ([]models.Route, error) {
 }
 
 func (s *Store) UpsertRoute(row *models.Route) error {
+	if err := s.normalizeAndValidateRouteUsers(row); err != nil {
+		return err
+	}
 	if !settingsFlag(row.RuleJSON, "chain_managed") {
-		if id := routeRuleInboundID(row.RuleJSON); id != "" && s.InboundBoundToChain(id) {
+		if id := routeRuleInboundID(row.RuleJSON); id != "" && s.InboundBoundToChain(id) && !routeHasUserConstraint(row.RuleJSON) {
 			return fmt.Errorf("%w: chain_in_use", ErrConflict)
 		}
 	}
@@ -2082,11 +2097,6 @@ func (s *Store) EnqueueCommand(cmd *models.ControlCommand) error {
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
-	if cmd.Kind == "applyConfig" && cmd.NodeUUID != "" {
-		_ = s.db.Model(&models.ControlCommand{}).
-			Where("node_uuid = ? AND kind = ? AND status IN ?", cmd.NodeUUID, "applyConfig", []string{models.CmdPending, models.CmdSent}).
-			Updates(map[string]any{"status": models.CmdSuperseded, "payload_json": "", "updated_at": now()}).Error
-	}
 	if cmd.Kind == "applyConfig" || cmd.Kind == "syncQuota" || cmd.Kind == "applyCert" {
 		sealed, err := secretcrypt.Seal(cmd.PayloadJSON)
 		if err != nil {
@@ -2094,7 +2104,16 @@ func (s *Store) EnqueueCommand(cmd *models.ControlCommand) error {
 		}
 		cmd.PayloadJSON = sealed
 	}
-	return s.db.Create(cmd).Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if cmd.Kind == "applyConfig" && cmd.NodeUUID != "" {
+			if err := tx.Model(&models.ControlCommand{}).
+				Where("node_uuid = ? AND kind IN ? AND status IN ?", cmd.NodeUUID, []string{"applyConfig", "syncQuota"}, []string{models.CmdPending, models.CmdSent}).
+				Updates(map[string]any{"status": models.CmdSuperseded, "payload_json": "", "updated_at": now()}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Create(cmd).Error
+	})
 }
 
 func (s *Store) PendingCommands(nodeUUID string) ([]models.ControlCommand, error) {

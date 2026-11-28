@@ -107,6 +107,7 @@ func UploadAccountAvatar(c *gin.Context) {
 		api.RespondError(c, http.StatusInternalServerError, "Failed to save avatar")
 		return
 	}
+	accounts.InvalidateUserCache(uuidStr)
 	if previous != "" && previous != version {
 		_ = os.Remove(avatarPath(uuidStr, previous))
 	}

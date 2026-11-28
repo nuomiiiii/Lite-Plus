@@ -35,7 +35,7 @@ func toolDescriptors() []gin.H {
 	agentUUID := schema("agent_uuid", "string", true)
 	path := schema("path", "string", true)
 	idem := schema("idempotency_key", "string", true)
-	return []gin.H{
+	tools := []gin.H{
 		tool("get_authorization", "Current MCP lease without secrets", gin.H{"type": "object", "additionalProperties": false, "properties": gin.H{}}),
 		tool("list_agents", "Authorized nodes with their IPv4 and IPv6 addresses", objectSchema(gin.H{"q": schema("q", "string", false)}, nil)),
 		tool("get_agent", "Authorized node details with its IPv4 and IPv6 addresses", objectSchema(gin.H{"agent_uuid": agentUUID}, []string{"agent_uuid"})),
@@ -95,6 +95,7 @@ func toolDescriptors() []gin.H {
 		tool("file_download_read", "Read a download chunk of at most 1 MiB", objectSchema(gin.H{"download_id": schema("download_id", "string", true), "offset": schema("offset", "integer", false), "max_bytes": schema("max_bytes", "integer", false)}, []string{"download_id"})),
 		tool("file_download_close", "Close a download", objectSchema(gin.H{"download_id": schema("download_id", "string", true)}, []string{"download_id"})),
 	}
+	return append(tools, nodemgtToolDescriptors()...)
 }
 
 func tool(name, description string, schema gin.H) gin.H {
@@ -181,7 +182,9 @@ func callTool(c *gin.Context, lease models.MCPLease, name string, args map[strin
 	case "file_download_close":
 		return fileDownloadFollowTool(lease, "file.download.close", args, now, true)
 	default:
-		_ = c
+		if isNodemgtTool(name) {
+			return callNodemgtTool(c, lease, name, args)
+		}
 		return nil, errTool("unknown tool")
 	}
 }

@@ -936,6 +936,9 @@ func cleanupScheduledData() {
 	if err := tasks.CleanupMainlandReachabilityData(); err != nil {
 		logger.Errorf("server", "Failed to clean mainland reachability samples: %v", err)
 	}
+	if err := tasks.CleanupReturnRouteEvents(); err != nil {
+		logger.Errorf("server", "Failed to clean expired return route events: %v", err)
+	}
 	if err := store.New(dbcore.GetDBInstance()).CleanupExpired(time.Now().UTC()); err != nil {
 		logger.Errorf("server", "Failed to clean nodemgt retention data: %v", err)
 	}

@@ -16,23 +16,32 @@ import (
 )
 
 func EnqueueApplyConfig(st *store.Store, nodeUUID string) error {
+	_, err := EnqueueApplyConfigOp(st, nodeUUID)
+	return err
+}
+
+func EnqueueApplyConfigOp(st *store.Store, nodeUUID string) (string, error) {
 	if strings.TrimSpace(nodeUUID) == "" {
-		return nil
+		return "", nil
 	}
 	snap, err := st.NodeSnapshot(nodeUUID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	payload, err := json.Marshal(snap)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return st.EnqueueCommand(&models.ControlCommand{
+	cmd := &models.ControlCommand{
 		NodeUUID:    nodeUUID,
 		Kind:        "applyConfig",
 		PayloadJSON: string(payload),
 		Status:      models.CmdPending,
-	})
+	}
+	if err := st.EnqueueCommand(cmd); err != nil {
+		return "", err
+	}
+	return cmd.OperationID, nil
 }
 
 func EnqueueSyncQuota(st *store.Store, nodeUUID, operationID string) error {

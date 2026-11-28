@@ -41,12 +41,14 @@ func init() {
 	reg("nodemgt.outbound.list", nodemgtOutboundList, "List nodemgt outbounds")
 	reg("nodemgt.outbound.upsert", nodemgtOutboundUpsert, "Create or update a nodemgt outbound")
 	reg("nodemgt.outbound.delete", nodemgtOutboundDelete, "Delete a nodemgt outbound")
+	reg("nodemgt.outbound.test", nodemgtOutboundTest, "Test connectivity of a nodemgt outbound")
 	reg("nodemgt.route.list", nodemgtRouteList, "List nodemgt routes")
 	reg("nodemgt.route.upsert", nodemgtRouteUpsert, "Create or update a nodemgt route")
 	reg("nodemgt.route.delete", nodemgtRouteDelete, "Delete a nodemgt route")
 	reg("nodemgt.chain.list", nodemgtChainList, "List nodemgt forward chains")
 	reg("nodemgt.chain.upsert", nodemgtChainUpsert, "Create or update a nodemgt forward chain")
 	reg("nodemgt.chain.delete", nodemgtChainDelete, "Delete a nodemgt forward chain")
+	reg("nodemgt.chain.test", nodemgtChainTest, "Test connectivity of a nodemgt forward chain")
 	reg("nodemgt.user.list", nodemgtUserList, "List node users")
 	reg("nodemgt.user.upsert", nodemgtUserUpsert, "Create or update a node user")
 	reg("nodemgt.user.delete", nodemgtUserDelete, "Delete a node user")
@@ -211,6 +213,8 @@ func nodemgtDeliveryStatus(status string) string {
 		return "applied"
 	case models.CmdFailed:
 		return "failed"
+	case models.CmdSuperseded:
+		return "superseded"
 	case models.CmdPending, "":
 		return "saved"
 	default:
@@ -1054,20 +1058,21 @@ func nodemgtRouteList(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.Jso
 
 func routeView(row models.Route) map[string]any {
 	var s struct {
-		InboundID         string `json:"inbound_id"`
-		OutboundID        string `json:"outbound_id"`
-		PrimaryOutboundID string `json:"primary_outbound_id"`
-		BackupOutboundID  string `json:"backup_outbound_id"`
-		Strategy          string `json:"strategy"`
-		Domain            string `json:"domain"`
-		IP                string `json:"ip"`
-		Network           string `json:"network"`
-		Protocol          string `json:"protocol"`
-		Port              string `json:"port"`
-		Source            string `json:"source"`
-		BackupDirect      bool   `json:"backup_direct"`
-		FallbackDirect    bool   `json:"fallback_direct"`
-		ChainManaged      any    `json:"chain_managed"`
+		InboundID         string          `json:"inbound_id"`
+		OutboundID        string          `json:"outbound_id"`
+		PrimaryOutboundID string          `json:"primary_outbound_id"`
+		BackupOutboundID  string          `json:"backup_outbound_id"`
+		Strategy          string          `json:"strategy"`
+		Domain            string          `json:"domain"`
+		IP                string          `json:"ip"`
+		Network           string          `json:"network"`
+		Protocol          string          `json:"protocol"`
+		Port              string          `json:"port"`
+		Source            string          `json:"source"`
+		UserIDs           json.RawMessage `json:"user_ids"`
+		BackupDirect      bool            `json:"backup_direct"`
+		FallbackDirect    bool            `json:"fallback_direct"`
+		ChainManaged      any             `json:"chain_managed"`
 	}
 	_ = json.Unmarshal([]byte(row.RuleJSON), &s)
 	outbound := strings.TrimSpace(s.PrimaryOutboundID)
@@ -1081,6 +1086,10 @@ func routeView(row models.Route) map[string]any {
 	backup := strings.TrimSpace(s.BackupOutboundID)
 	if strategy == "failover" && s.BackupDirect {
 		backup = "direct"
+	}
+	userIDs, _ := store.ParseRouteUserIDsJSON(s.UserIDs)
+	if userIDs == nil {
+		userIDs = []string{}
 	}
 	return map[string]any{
 		"id":                 row.ID,
@@ -1103,6 +1112,7 @@ func routeView(row models.Route) map[string]any {
 		"protocol":           s.Protocol,
 		"port":               s.Port,
 		"source":             s.Source,
+		"user_ids":           userIDs,
 		"chain_managed":      boolFromJSONAny(s.ChainManaged),
 		"rule_json":          row.RuleJSON,
 	}
@@ -1111,18 +1121,19 @@ func routeView(row models.Route) map[string]any {
 func nodemgtRouteUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	var p struct {
 		models.Route
-		InboundID        string `json:"inbound_id"`
-		OutboundID       string `json:"outbound_id"`
-		BackupOutboundID string `json:"backup_outbound_id"`
-		Strategy         string `json:"strategy"`
-		Domain           string `json:"domain"`
-		IP               string `json:"ip"`
-		Network          string `json:"network"`
-		Protocol         string `json:"protocol"`
-		Port             string `json:"port"`
-		Source           string `json:"source"`
-		BackupDirect     *bool  `json:"backup_direct"`
-		FallbackDirect   *bool  `json:"fallback_direct"`
+		InboundID        string          `json:"inbound_id"`
+		OutboundID       string          `json:"outbound_id"`
+		BackupOutboundID string          `json:"backup_outbound_id"`
+		Strategy         string          `json:"strategy"`
+		Domain           string          `json:"domain"`
+		IP               string          `json:"ip"`
+		Network          string          `json:"network"`
+		Protocol         string          `json:"protocol"`
+		Port             string          `json:"port"`
+		Source           string          `json:"source"`
+		UserIDs          json.RawMessage `json:"user_ids"`
+		BackupDirect     *bool           `json:"backup_direct"`
+		FallbackDirect   *bool           `json:"fallback_direct"`
 	}
 	if err := req.BindParams(&p); err != nil {
 		return nil, rpc.MakeError(rpc.InvalidParams, err.Error(), nil)
@@ -1132,6 +1143,10 @@ func nodemgtRouteUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	}
 	if strings.TrimSpace(p.OutboundID) == "" {
 		return nil, rpc.MakeError(rpc.InvalidParams, "outbound required", nil)
+	}
+	userIDs, err := store.ParseRouteUserIDsJSON(p.UserIDs)
+	if err != nil {
+		return nil, nodemgtErr(err)
 	}
 	backupDirect := false
 	if p.BackupDirect != nil {
@@ -1143,7 +1158,7 @@ func nodemgtRouteUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 	if p.FallbackDirect != nil {
 		fallbackDirect = *p.FallbackDirect
 	}
-	rule, _ := json.Marshal(map[string]any{
+	rule := map[string]any{
 		"inbound_id":          p.InboundID,
 		"outbound_id":         p.OutboundID,
 		"primary_outbound_id": p.OutboundID,
@@ -1157,8 +1172,12 @@ func nodemgtRouteUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		"protocol":            p.Protocol,
 		"port":                p.Port,
 		"source":              p.Source,
-	})
-	p.RuleJSON = string(rule)
+	}
+	if len(userIDs) > 0 {
+		rule["user_ids"] = userIDs
+	}
+	raw, _ := json.Marshal(rule)
+	p.RuleJSON = string(raw)
 	row := p.Route
 	st := nodemgtST()
 	if err := st.UpsertUserRoute(&row); err != nil {
@@ -1169,8 +1188,48 @@ func nodemgtRouteUpsert(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc
 		saved = *got
 	}
 	_ = nodemgtAudit(ctx, st, "nodemgt.route.upsert", saved.ID, saved.Name)
-	nodemgtPush(st, saved.NodeUUID)
-	return routeView(saved), nil
+	view := routeView(saved)
+	opID, err := nodemgtEnqueueApply(st, saved.NodeUUID)
+	if err != nil {
+		view["delivery_status"] = "enqueue_failed"
+		view["last_error"] = err.Error()
+		return view, nil
+	}
+	if opID != "" {
+		view["operation_id"] = opID
+		view["delivery_status"] = "saved"
+	}
+	return view, nil
+}
+
+func nodemgtEnqueueApply(st *store.Store, nodeUUID string) (string, error) {
+	nodeUUID = strings.TrimSpace(nodeUUID)
+	if nodeUUID == "" {
+		return "", nil
+	}
+	if _, err := clients.GetClientByUUID(nodeUUID); err != nil {
+		return "", nil
+	}
+	opID, err := control.EnqueueApplyConfigOp(st, nodeUUID)
+	if err != nil {
+		return "", err
+	}
+	go pushNodemgtPendingOnly([]string{nodeUUID})
+	return opID, nil
+}
+
+func pushNodemgtPendingOnly(nodeUUIDs []string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Errorf("nodemgt", "push pending: %v", rec)
+		}
+	}()
+	st := store.New(dbcore.GetDBInstance())
+	for _, id := range nodeUUIDs {
+		if err := control.PushPending(st, id); err != nil {
+			logger.Warnf("nodemgt", "push pending %s: %v", id, err)
+		}
+	}
 }
 
 func nodemgtRouteDelete(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
@@ -2151,10 +2210,18 @@ func nodemgtSubPreview(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.
 
 func nodemgtControlStatus(_ context.Context, req *rpc.JsonRpcRequest) (any, *rpc.JsonRpcError) {
 	var p struct {
-		NodeUUID string `json:"node_uuid"`
+		NodeUUID    string `json:"node_uuid"`
+		OperationID string `json:"operation_id"`
 	}
 	_ = req.BindParams(&p)
 	st := nodemgtST()
+	if opID := strings.TrimSpace(p.OperationID); opID != "" {
+		cmd, err := st.GetCommand(opID)
+		if err != nil {
+			return nil, nodemgtErr(err)
+		}
+		return nodemgtCommandView(*cmd), nil
+	}
 	if strings.TrimSpace(p.NodeUUID) != "" {
 		cmd, err := st.LatestCommandForNode(p.NodeUUID)
 		if err == nil && cmd != nil {

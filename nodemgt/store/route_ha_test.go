@@ -125,3 +125,92 @@ func TestDeletePrimaryOutboundRemovesFailoverRoute(t *testing.T) {
 	_, err = st.GetOutbound(backup.ID)
 	require.NoError(t, err)
 }
+
+func TestDisableHAMemberRejectedWhileRouteEnabled(t *testing.T) {
+	st := testDB(t)
+	primary := &models.Outbound{NodeUUID: "n1", Name: "exit-a", Protocol: "freedom", Enabled: true}
+	backup := &models.Outbound{NodeUUID: "n1", Name: "exit-b", Protocol: "freedom", Enabled: true}
+	spare := &models.Outbound{NodeUUID: "n1", Name: "exit-c", Protocol: "freedom", Enabled: true}
+	require.NoError(t, st.UpsertOutbound(primary))
+	require.NoError(t, st.UpsertOutbound(backup))
+	require.NoError(t, st.UpsertOutbound(spare))
+	row := &models.Route{
+		NodeUUID: "n1",
+		Name:     "ha",
+		Enabled:  true,
+		RuleJSON: `{"outbound_id":"` + primary.ID + `","strategy":"failover","backup_outbound_id":"` + backup.ID + `"}`,
+	}
+	require.NoError(t, st.UpsertUserRoute(row))
+
+	primary.Enabled = false
+	err := st.UpsertOutbound(primary)
+	require.ErrorIs(t, err, ErrConflict)
+	require.Contains(t, err.Error(), "outbound in use")
+	got, err := st.GetOutbound(primary.ID)
+	require.NoError(t, err)
+	require.True(t, got.Enabled)
+
+	backup.Enabled = false
+	err = st.UpsertOutbound(backup)
+	require.ErrorIs(t, err, ErrConflict)
+	got, err = st.GetOutbound(backup.ID)
+	require.NoError(t, err)
+	require.True(t, got.Enabled)
+
+	spare.Enabled = false
+	require.NoError(t, st.UpsertOutbound(spare))
+	got, err = st.GetOutbound(spare.ID)
+	require.NoError(t, err)
+	require.False(t, got.Enabled)
+}
+
+func TestHASaveRejectsDisabledMembers(t *testing.T) {
+	st := testDB(t)
+	primary := &models.Outbound{NodeUUID: "n1", Name: "exit-a", Protocol: "freedom", Enabled: true}
+	backup := &models.Outbound{NodeUUID: "n1", Name: "exit-b", Protocol: "freedom", Enabled: false}
+	require.NoError(t, st.UpsertOutbound(primary))
+	require.NoError(t, st.UpsertOutbound(backup))
+	err := st.UpsertUserRoute(&models.Route{
+		NodeUUID: "n1",
+		Name:     "ha",
+		Enabled:  true,
+		RuleJSON: `{"outbound_id":"` + primary.ID + `","strategy":"failover","backup_outbound_id":"` + backup.ID + `"}`,
+	})
+	require.ErrorIs(t, err, ErrInvalid)
+	require.Contains(t, err.Error(), "outbound disabled")
+
+	backup.Enabled = true
+	require.NoError(t, st.UpsertOutbound(backup))
+	primary.Enabled = false
+	require.NoError(t, st.UpsertOutbound(primary))
+	err = st.UpsertUserRoute(&models.Route{
+		NodeUUID: "n1",
+		Name:     "ha-2",
+		Enabled:  true,
+		RuleJSON: `{"outbound_id":"` + primary.ID + `","strategy":"failover","backup_outbound_id":"` + backup.ID + `"}`,
+	})
+	require.ErrorIs(t, err, ErrInvalid)
+	require.Contains(t, err.Error(), "outbound disabled")
+}
+
+func TestDisableHAMemberAllowedAfterRouteDisabled(t *testing.T) {
+	st := testDB(t)
+	primary := &models.Outbound{NodeUUID: "n1", Name: "exit-a", Protocol: "freedom", Enabled: true}
+	backup := &models.Outbound{NodeUUID: "n1", Name: "exit-b", Protocol: "freedom", Enabled: true}
+	require.NoError(t, st.UpsertOutbound(primary))
+	require.NoError(t, st.UpsertOutbound(backup))
+	row := &models.Route{
+		NodeUUID: "n1",
+		Name:     "ha",
+		Enabled:  true,
+		RuleJSON: `{"outbound_id":"` + primary.ID + `","strategy":"failover","backup_outbound_id":"` + backup.ID + `"}`,
+	}
+	require.NoError(t, st.UpsertUserRoute(row))
+	row.Enabled = false
+	require.NoError(t, st.UpsertUserRoute(row))
+	primary.Enabled = false
+	require.NoError(t, st.UpsertOutbound(primary))
+	got, err := st.GetOutbound(primary.ID)
+	require.NoError(t, err)
+	require.False(t, got.Enabled)
+}

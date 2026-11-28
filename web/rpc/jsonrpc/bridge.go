@@ -2,8 +2,10 @@ package jsonrpc
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nuomiiiii/lite/pkg/rpc"
@@ -69,7 +71,12 @@ func Bind(method string, opts ...BindOption) gin.HandlerFunc {
 			return
 		}
 		applyTokenResponseHeaders(c, method)
+		started := time.Now()
 		resp := CallFromGin(c, method, params)
+		if method == "admin:listClients" {
+			durMS := float64(time.Since(started).Microseconds()) / 1000.0
+			c.Header("Server-Timing", fmt.Sprintf("list;dur=%.2f", durMS))
+		}
 		renderResponse(c, cfg, resp)
 	}
 }

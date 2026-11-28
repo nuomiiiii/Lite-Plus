@@ -167,9 +167,17 @@ func handleV2RPCWithPresence(uuid string, req v2.Request, allowWait, markPresenc
 			Domain      string `json:"domain"`
 			Issuer      string `json:"issuer"`
 			NotAfter    string `json:"not_after"`
+			LatencyMS   int64  `json:"latency_ms"`
+			StatusCode  int    `json:"status_code"`
 		}
 		if err := bindV2Params(req.Params, &params); err != nil {
 			return v2.Error(req.ID, -32602, "invalid nodemgt control result", err.Error())
+		}
+		if handled, err := control.CompleteProbe(uuid, params.OperationID, params.Status, params.Error, params.LatencyMS, params.StatusCode); handled {
+			if err != nil {
+				return v2.Error(req.ID, -32000, "failed to ack nodemgt probe", err.Error())
+			}
+			return v2.Success(req.ID, gin.H{"status": "success"})
 		}
 		var notAfter *time.Time
 		if ts := strings.TrimSpace(params.NotAfter); ts != "" {

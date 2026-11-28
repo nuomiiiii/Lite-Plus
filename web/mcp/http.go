@@ -83,7 +83,7 @@ func dispatchRPC(c *gin.Context, lease models.MCPLease, message map[string]any) 
 				"name":    "Lite",
 				"version": utils.CurrentVersion,
 			},
-			"instructions": "This MCP authorization grants full terminal, exec, and file management on the selected Lite nodes until it expires or is revoked. It is not an administrator account.",
+			"instructions": "This MCP authorization grants terminal, exec, file management, and nodemgt (inbounds, outbounds, routes, forwarding chains, sync, and connectivity tests) on the selected Lite nodes until it expires or is revoked. It is not an administrator account.",
 		})
 	case "ping":
 		return jsonRPCResult(id, gin.H{})

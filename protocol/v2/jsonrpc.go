@@ -27,6 +27,7 @@ const (
 	MethodAgentConfigResult     = "agent.configResult"
 	MethodAgentPull             = "agent.pull"
 	MethodNodemgtControl        = "nodemgt.control"
+	MethodNodemgtProbe          = "nodemgt.probe"
 	MethodNodemgtControlResult  = "nodemgt.controlResult"
 	MethodNodemgtUsage          = "nodemgt.usage"
 	MethodNodemgtPresence       = "nodemgt.presence"
