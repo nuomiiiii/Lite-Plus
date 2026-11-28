@@ -641,6 +641,45 @@ func (s *Store) GetOutbound(id string) (*models.Outbound, error) {
 	return &row, nil
 }
 
+// ResolveProbeCore picks the core hint sent to an agent for probing out.
+// Sing-box-only protocols stay pinned to sing-box; dual-core protocols
+// (shadowsocks, vless, vmess, trojan, socks, http, freedom, blackhole) fall
+// back to "" when out.Core has no enabled inbounds on the node so both old and
+// new agents probe whichever live core actually hosts the outbound.
+func (s *Store) ResolveProbeCore(out *models.Outbound) string {
+	if out == nil {
+		return ""
+	}
+	proto := strings.ToLower(strings.TrimSpace(out.Protocol))
+	switch proto {
+	case "hysteria2", "tuic", "anytls", "urltest", "failover":
+		return models.CoreSingBox
+	}
+	pref := strings.ToLower(strings.TrimSpace(out.Core))
+	inbounds, err := s.ListInbounds(out.NodeUUID)
+	if err != nil {
+		return pref
+	}
+	enabledCores := map[string]bool{}
+	for _, in := range inbounds {
+		if !in.Enabled {
+			continue
+		}
+		core := strings.ToLower(strings.TrimSpace(in.Core))
+		if core == "" {
+			core = models.CoreXray
+		}
+		enabledCores[core] = true
+	}
+	if pref != "" && enabledCores[pref] {
+		return pref
+	}
+	if len(enabledCores) > 0 {
+		return ""
+	}
+	return pref
+}
+
 func routeRuleInboundID(ruleJSON string) string {
 	var rule struct {
 		InboundID string `json:"inbound_id"`

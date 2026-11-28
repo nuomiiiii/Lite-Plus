@@ -652,7 +652,7 @@ func mcpNodemgtOutbounds(ctx context.Context, c *gin.Context, lease models.MCPLe
 		if !out.Enabled {
 			return gin.H{"ok": false, "error": "outbound is disabled", "outbound_id": out.ID, "node_uuid": out.NodeUUID, "tag": tag}, nil
 		}
-		res := control.ProbeOutbound(ctx, out.NodeUUID, out.Core, tag, 9*time.Second)
+		res := control.ProbeOutbound(ctx, out.NodeUUID, st.ResolveProbeCore(out), tag, 9*time.Second)
 		return gin.H{
 			"ok":          res.OK,
 			"latency_ms":  res.LatencyMS,
@@ -928,7 +928,7 @@ func mcpNodemgtChains(ctx context.Context, c *gin.Context, lease models.MCPLease
 				if !target.outbound.Enabled {
 					res = control.OutboundProbeResult{OK: false, Error: "outbound is disabled"}
 				} else {
-					res = control.ProbeOutbound(ctx, target.outbound.NodeUUID, target.outbound.Core, target.tag, 9*time.Second)
+					res = control.ProbeOutbound(ctx, target.outbound.NodeUUID, st.ResolveProbeCore(target.outbound), target.tag, 9*time.Second)
 				}
 				results[i] = gin.H{
 					"node_uuid":   target.outbound.NodeUUID,

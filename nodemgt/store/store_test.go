@@ -1213,3 +1213,35 @@ func TestLatestCommandsReturnsNewestPerNodeWithoutPayload(t *testing.T) {
 	require.Equal(t, models.CmdPending, got[2].Status)
 	require.Empty(t, got[2].PayloadJSON, "LatestCommands must omit PayloadJSON")
 }
+
+func TestResolveProbeCore(t *testing.T) {
+	st := testDB(t)
+
+	// Node with only sing-box enabled inbound: manual SS outbound saved with core="xray"
+	// should resolve to "" so both old and new agents probe the live sing-box core.
+	require.NoError(t, st.UpsertInbound(&models.Inbound{
+		NodeUUID: "sb-only", Name: "hy2-in", Core: models.CoreSingBox, Protocol: "hysteria2", Port: 443, Enabled: true,
+	}))
+	ssOut := &models.Outbound{NodeUUID: "sb-only", Name: "manual-ss", Core: models.CoreXray, Protocol: "shadowsocks", Enabled: true}
+	require.Equal(t, "", st.ResolveProbeCore(ssOut))
+
+	// Node with only xray enabled inbound: manual SS outbound saved with core="sing-box"
+	// should also resolve to "" so the live xray core is probed.
+	require.NoError(t, st.UpsertInbound(&models.Inbound{
+		NodeUUID: "xr-only", Name: "vless-in", Core: models.CoreXray, Protocol: "vless", Port: 443, Enabled: true,
+	}))
+	ssOnXray := &models.Outbound{NodeUUID: "xr-only", Name: "manual-ss", Core: models.CoreSingBox, Protocol: "shadowsocks", Enabled: true}
+	require.Equal(t, "", st.ResolveProbeCore(ssOnXray))
+
+	// Sing-box-only protocol stays pinned to sing-box even on xray-only node.
+	hy2Out := &models.Outbound{NodeUUID: "xr-only", Name: "hy2-out", Core: models.CoreSingBox, Protocol: "hysteria2", Enabled: true}
+	require.Equal(t, models.CoreSingBox, st.ResolveProbeCore(hy2Out))
+
+	// Preferred core is preserved when that core has an enabled inbound on the node.
+	ssMatched := &models.Outbound{NodeUUID: "xr-only", Name: "manual-ss-xr", Core: models.CoreXray, Protocol: "shadowsocks", Enabled: true}
+	require.Equal(t, models.CoreXray, st.ResolveProbeCore(ssMatched))
+
+	// Node with no enabled inbounds preserves preferred core.
+	ssNoIn := &models.Outbound{NodeUUID: "empty-node", Name: "manual-ss", Core: models.CoreXray, Protocol: "shadowsocks", Enabled: true}
+	require.Equal(t, models.CoreXray, st.ResolveProbeCore(ssNoIn))
+}

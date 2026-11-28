@@ -58,7 +58,8 @@ func nodemgtOutboundTest(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rp
 			"tag":         tag,
 		}, nil
 	}
-	res := control.ProbeOutbound(ctx, out.NodeUUID, out.Core, tag, nodemgtProbeRPCTimeout)
+	probeCore := st.ResolveProbeCore(out)
+	res := control.ProbeOutbound(ctx, out.NodeUUID, probeCore, tag, nodemgtProbeRPCTimeout)
 	return map[string]any{
 		"ok":          res.OK,
 		"latency_ms":  res.LatencyMS,
@@ -238,7 +239,8 @@ func nodemgtChainTest(ctx context.Context, req *rpc.JsonRpcRequest) (any, *rpc.J
 			if !target.outbound.Enabled {
 				probeRes = control.OutboundProbeResult{OK: false, Error: "outbound is disabled"}
 			} else {
-				probeRes = control.ProbeOutbound(ctx, target.outbound.NodeUUID, target.outbound.Core, tag, nodemgtProbeRPCTimeout)
+				probeCore := st.ResolveProbeCore(target.outbound)
+				probeRes = control.ProbeOutbound(ctx, target.outbound.NodeUUID, probeCore, tag, nodemgtProbeRPCTimeout)
 			}
 			results[i] = chainHopProbeResult{
 				SourceNodeUUID:   target.sourceNodeUUID,
